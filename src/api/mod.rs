@@ -5,7 +5,6 @@ use reqwest::header::{HeaderMap, HeaderValue, CONTENT_TYPE};
 use serde::Deserialize;
 use std::time::Duration;
 
-#[allow(dead_code)]
 const BASE_URL: &str = "https://api.switch-bot.com";
 
 #[derive(Deserialize, Debug)]
@@ -59,14 +58,24 @@ pub fn parse_color_str(s: &str) -> anyhow::Result<(u8, u8, u8)> {
     Ok((r, g, b))
 }
 
+fn check_status<T>(resp: &ApiResponse<T>) -> Result<()> {
+    if resp.status_code == 100 {
+        Ok(())
+    } else {
+        Err(anyhow::anyhow!(
+            "API error: {} (statusCode={})",
+            resp.message,
+            resp.status_code
+        ))
+    }
+}
+
 pub struct Client {
     pub token: String,
     pub secret: String,
-    #[allow(dead_code)]
     http: reqwest::blocking::Client,
 }
 
-#[allow(dead_code)]
 impl Client {
     pub fn new(token: String, secret: String) -> Result<Self> {
         let http = reqwest::blocking::Client::builder()
@@ -95,6 +104,83 @@ impl Client {
         headers.insert("nonce", HeaderValue::from_str(nonce)?);
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
         Ok(headers)
+    }
+
+    pub fn list_devices(&self) -> Result<Vec<Device>> {
+        let url = format!("{}/v1.1/devices", BASE_URL);
+        let resp = self
+            .http
+            .get(&url)
+            .headers(self.auth_headers()?)
+            .send()
+            .context("HTTP request failed (list_devices)")?;
+        let api: ApiResponse<DeviceList> = resp
+            .error_for_status()
+            .context("HTTP error from list_devices")?
+            .json()
+            .context("failed to decode list_devices JSON")?;
+        check_status(&api)?;
+        Ok(api.body.context("empty body in list_devices")?.device_list)
+    }
+
+    pub fn get_status(&self, device_id: &str) -> Result<BulbStatus> {
+        let url = format!("{}/v1.1/devices/{}/status", BASE_URL, device_id);
+        let resp = self
+            .http
+            .get(&url)
+            .headers(self.auth_headers()?)
+            .send()
+            .context("HTTP request failed (get_status)")?;
+        let api: ApiResponse<BulbStatus> = resp
+            .error_for_status()
+            .context("HTTP error from get_status")?
+            .json()
+            .context("failed to decode get_status JSON")?;
+        check_status(&api)?;
+        api.body.context("empty body in get_status")
+    }
+
+    fn send_command(&self, device_id: &str, command: &str, parameter: &str) -> Result<()> {
+        let url = format!("{}/v1.1/devices/{}/commands", BASE_URL, device_id);
+        let body = serde_json::json!({
+            "command": command,
+            "parameter": parameter,
+            "commandType": "command",
+        });
+        let resp = self
+            .http
+            .post(&url)
+            .headers(self.auth_headers()?)
+            .json(&body)
+            .send()
+            .context("HTTP request failed (send_command)")?;
+        let api: ApiResponse<serde_json::Value> = resp
+            .error_for_status()
+            .context("HTTP error from send_command")?
+            .json()
+            .context("failed to decode send_command JSON")?;
+        check_status(&api)?;
+        Ok(())
+    }
+
+    pub fn set_color(&self, device_id: &str, r: u8, g: u8, b: u8) -> Result<()> {
+        self.send_command(device_id, "setColor", &format!("{}:{}:{}", r, g, b))
+    }
+
+    pub fn set_brightness(&self, device_id: &str, value: u32) -> Result<()> {
+        self.send_command(device_id, "setBrightness", &value.to_string())
+    }
+
+    pub fn set_color_temperature(&self, device_id: &str, kelvin: u32) -> Result<()> {
+        self.send_command(device_id, "setColorTemperature", &kelvin.to_string())
+    }
+
+    pub fn turn_on(&self, device_id: &str) -> Result<()> {
+        self.send_command(device_id, "turnOn", "default")
+    }
+
+    pub fn turn_off(&self, device_id: &str) -> Result<()> {
+        self.send_command(device_id, "turnOff", "default")
     }
 }
 
@@ -176,5 +262,29 @@ mod tests {
     fn client_new_with_5s_timeout_builds() {
         let client = Client::new("tok".to_string(), "sec".to_string());
         assert!(client.is_ok());
+    }
+
+    #[test]
+    fn check_status_100_ok() {
+        let resp: ApiResponse<DeviceList> = serde_json::from_str(
+            r#"{
+            "statusCode": 100, "message": "success", "body": {"deviceList": []}
+        }"#,
+        )
+        .unwrap();
+        assert!(check_status(&resp).is_ok());
+    }
+
+    #[test]
+    fn check_status_non_100_errors() {
+        let resp: ApiResponse<DeviceList> = serde_json::from_str(
+            r#"{
+            "statusCode": 161, "message": "device offline", "body": null
+        }"#,
+        )
+        .unwrap();
+        let err = check_status(&resp).unwrap_err();
+        assert!(err.to_string().contains("device offline"));
+        assert!(err.to_string().contains("161"));
     }
 }
