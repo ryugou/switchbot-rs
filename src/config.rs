@@ -3,7 +3,8 @@ use std::fs;
 use std::path::Path;
 use std::process::Command;
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::Context as AnyhowContext;
+use anyhow::{anyhow, Result};
 use serde::Deserialize;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -25,7 +26,7 @@ pub fn read_mode(path: &Path) -> Result<Option<Mode>> {
     let content = fs::read_to_string(path)
         .with_context(|| format!("failed to read mode file: {}", path.display()))?;
     let parsed: ModeFile = toml::from_str(&content)
-        .with_context(|| format!("failed to parse mode file: {}", path.display()))?;
+        .map_err(|e| anyhow!("failed to parse mode file {}: {}", path.display(), e))?;
     match parsed.mode.as_str() {
         "rgb" => Ok(Some(Mode::Rgb)),
         "temp" => Ok(Some(Mode::Temp)),
@@ -170,6 +171,86 @@ fn resolve_with_op_inject(env_path: &Path) -> Result<HashMap<String, String>> {
     let stdout =
         String::from_utf8(output.stdout).context("`op inject` returned non-UTF8 output")?;
     Ok(parse_env_content(&stdout))
+}
+
+use std::os::unix::fs::PermissionsExt;
+use std::path::PathBuf;
+
+#[derive(Debug)]
+pub struct Context {
+    pub credentials: Credentials,
+    pub device: DefaultDevice,
+    pub mode_path: PathBuf,
+    pub log_path: PathBuf,
+}
+
+const ENV_TEMPLATE: &str = "\
+# 1Password 連携 (推奨):
+SWITCHBOT_TOKEN=op://Personal/SwitchBot/token
+SWITCHBOT_SECRET=op://Personal/SwitchBot/secret
+# 直接値を書く場合 (テスト用途等):
+# SWITCHBOT_TOKEN=...
+# SWITCHBOT_SECRET=...
+";
+
+const DEVICES_TEMPLATE: &str = "\
+# ~/.switchbot/devices
+# `switchbot list` の出力をリダイレクトするか、手書きで埋めてください。
+[default]
+id = \"\"
+type = \"Color Bulb\"
+";
+
+/// `~/.switchbot/` ディレクトリを返す。HOME 未設定ならエラー。
+pub fn config_dir() -> Result<PathBuf> {
+    let base = directories::BaseDirs::new()
+        .ok_or_else(|| anyhow!("ホームディレクトリを特定できません"))?;
+    Ok(base.home_dir().join(".switchbot"))
+}
+
+/// 必要なディレクトリ・テンプレートを用意し、Context を組み立てる。
+/// `.env` または `devices` がなければテンプレを書き出して `BootstrapNeeded` 相当のエラーで返す。
+pub fn load_context() -> Result<Context> {
+    let dir = config_dir()?;
+    fs::create_dir_all(&dir).with_context(|| format!("failed to create {}", dir.display()))?;
+
+    let env_path = dir.join(".env");
+    let devices_path = dir.join("devices");
+    let mode_path = dir.join("mode");
+    let log_path = dir.join("log");
+
+    let mut needs_setup = Vec::new();
+
+    if !env_path.exists() {
+        fs::write(&env_path, ENV_TEMPLATE)
+            .with_context(|| format!("failed to write template: {}", env_path.display()))?;
+        fs::set_permissions(&env_path, fs::Permissions::from_mode(0o600))
+            .with_context(|| format!("failed to chmod 600: {}", env_path.display()))?;
+        needs_setup.push(format!("{} を編集してください", env_path.display()));
+    }
+
+    if !devices_path.exists() {
+        fs::write(&devices_path, DEVICES_TEMPLATE)
+            .with_context(|| format!("failed to write template: {}", devices_path.display()))?;
+        needs_setup.push(format!(
+            "{} を編集してください (switchbot list で deviceId を確認)",
+            devices_path.display()
+        ));
+    }
+
+    if !needs_setup.is_empty() {
+        return Err(anyhow!("{}", needs_setup.join("\n")));
+    }
+
+    let credentials = load_credentials(&env_path)?;
+    let device = load_devices(&devices_path)?;
+
+    Ok(Context {
+        credentials,
+        device,
+        mode_path,
+        log_path,
+    })
 }
 
 #[cfg(test)]
@@ -367,5 +448,18 @@ id = "abc"
         let path = dir.path().join(".env");
         fs::write(&path, "SWITCHBOT_TOKEN=\nSWITCHBOT_SECRET=sec\n").unwrap();
         assert!(load_credentials(&path).is_err());
+    }
+
+    #[test]
+    fn env_template_contains_required_keys() {
+        assert!(ENV_TEMPLATE.contains("SWITCHBOT_TOKEN="));
+        assert!(ENV_TEMPLATE.contains("SWITCHBOT_SECRET="));
+        assert!(ENV_TEMPLATE.contains("op://"));
+    }
+
+    #[test]
+    fn devices_template_contains_default_section() {
+        assert!(DEVICES_TEMPLATE.contains("[default]"));
+        assert!(DEVICES_TEMPLATE.contains("id = \"\""));
     }
 }
