@@ -29,11 +29,11 @@ switchbot list                    # デバイス一覧 (TOML 形式)
 | サブコマンド | 引数 | 仕様 |
 |---|---|---|
 | `color` | `<hex>` | RRGGBB の 16 進 6 桁。`#` なし、大小文字不問。R/G/B 各 0–255 に分解し `setColor "{R}:{G}:{B}"` で送信。成功時にモードファイルを `mode = "rgb"` に更新。 |
-| `bright` | `<N\|max>` | 整数 1–100 または `max` (=100)。`setBrightness` を送信。モードファイルは変更しない。 |
+| `bright` | `<N\|max>` | 整数 1–100 または `max` (=100)。`setBrightness` を送信。モードファイルは変更しない。`0` は `setBrightness` API が受け付けないため不可。消灯は `switchbot off` を使う。 |
 | `temp` | `<K>` | 整数 2700–6500。範囲外はバリデーションエラー。`setColorTemperature` を送信。成功時にモードファイルを `mode = "temp"` に更新。 |
 | `bump` | `<axis>` | 後述の 10 axis のいずれか。GET status で現在値を取得 → ステップ幅を加減算 (clamp) → 対応コマンドで送信。 |
 | `on` / `off` | なし | `turnOn` / `turnOff` を `parameter: "default"` で送信。 |
-| `list` | なし | `/v1.1/devices` を呼び、TOML 形式で標準出力。`switchbot list > ~/.switchbot/devices` で初回設定が完結する想定。 |
+| `list` | なし | `/v1.1/devices` を呼び、TOML 形式で標準出力。`switchbot list > ~/.switchbot/devices` で初回設定が完結する想定 (出力フォーマットは「list の TOML 出力」セクション参照)。 |
 
 ### bump の axis (10 種) と step 幅
 
@@ -64,6 +64,36 @@ error: 現在 RGB モードです。switchbot temp <K> を先に実行してく�
 ### 単一デバイス前提
 
 `devices` ファイルの `[default]` セクションのみ参照。`--device <name>` 引数は将来拡張。
+
+### list の TOML 出力
+
+`/v1.1/devices` のレスポンスから取得したデバイスを TOML として標準出力に書き出す。各デバイスは独立したセクションになる。
+
+| TOML フィールド | 値の出所 |
+|---|---|
+| セクション名 | デバイスが 1 台だけなら `default` 固定。複数台なら `deviceName` を kebab-case (lower、英数字とハイフンのみ、それ以外は `-` に置換) に正規化 |
+| `id` | API の `deviceId` |
+| `type` | API の `deviceType` をそのまま (例: `"Color Bulb"`) |
+| `name` | API の `deviceName` (元の表示名) |
+
+```toml
+# デバイスが 1 台のとき
+[default]
+id = "01-202311241234-12345678"
+type = "Color Bulb"
+name = "Living Bulb"
+
+# 複数台のとき (ユーザーが手で 1 つを [default] にリネームする想定)
+[living-bulb]
+id = "01-202311241234-12345678"
+type = "Color Bulb"
+name = "Living Bulb"
+
+[bedroom-plug]
+id = "02-202311241234-87654321"
+type = "Plug Mini"
+name = "Bedroom Plug"
+```
 
 ## アーキテクチャ
 
@@ -118,30 +148,52 @@ main.rs
 
 ### `~/.switchbot/.env` (必須・手動編集)
 
-1Password 連携を前提とした認証情報の置き場。1Password の secret reference (`op://<vault>/<item>/<field>`) と素のリテラル値が混在可能。
+認証情報の置き場。1Password の secret reference (`op://<vault>/<item>/<field>`) と素のリテラル値が混在可能。
 
 ```
+# 1Password 連携 (推奨)
 SWITCHBOT_TOKEN=op://ai-agents/switchbot_api_token/credential
 SWITCHBOT_SECRET=op://ai-agents/switchbot_client_secret/credential
+
+# テスト用途で直接値を書く場合
+# SWITCHBOT_TOKEN=...
+# SWITCHBOT_SECRET=...
 ```
 
-起動時に `op inject -i ~/.switchbot/.env` を 1 回 shell out して解決済みの `.env` 形式テキストを stdout から取得し、自前でパースしてメモリ上の Config に格納する。
+#### 解決ロジック
 
-- `op` CLI が PATH にない → 通知 + 「1Password CLI (`op`) が必要です」
+起動時に `.env` を読み、`op://` で始まる値が **1 つでもあれば** `op inject -i ~/.switchbot/.env` を 1 回 shell out して解決済みテキストを stdout から取得し、自前でパースしてメモリ上の Config に格納する。
+
+`op://` が **1 つも無ければ** op を起動せず、`.env` を直接パースして使う。これによりテスト/CI/Linux ヘッドレス環境で `op` 未導入でも平文値だけで動作させられる。
+
+#### エラー条件
+
+- `op://` が `.env` 内に存在するが `op` CLI が PATH にない → 通知 + 「1Password CLI (`op`) が必要です」
 - `op inject` が non-zero 終了 → 通知 + 「1Password の解決に失敗しました (unlock されていますか?)」
 - 解決後に `SWITCHBOT_TOKEN` か `SWITCHBOT_SECRET` が空 → 通知 + 「.env の値が空です」
 
-biometric unlock を有効化しておくことで Touch ID プロンプトを最小化する (1Password アプリ側の設定)。
+1Password の biometric unlock を有効化しておくことで Touch ID プロンプトを最小化する (1Password アプリ側の設定)。
 
 ### `~/.switchbot/devices` (必須・手動編集または `list` 結果から作成)
 
 ```toml
 [default]
 id = "01-202311241234-12345678"
-type = "color-bulb"
+type = "Color Bulb"
+name = "Living Bulb"
 ```
 
-初版は `[default]` のみ参照。
+初版は `[default]` セクションの `id` のみ実装上必須。`type` `name` は将来の複数デバイス対応や表示用。
+
+初回起動時に書き出されるテンプレ:
+
+```toml
+# ~/.switchbot/devices
+# `switchbot list` の出力をリダイレクトするか、手書きで埋めてください。
+[default]
+id = ""
+type = "Color Bulb"
+```
 
 ### `~/.switchbot/mode` (自動生成・自動更新)
 
@@ -152,6 +204,10 @@ mode = "rgb"   # または "temp"
 `color` 成功時に `"rgb"`, `temp` 成功時に `"temp"` を書き込む。`bump R/G/B/temp±` 実行時に読み込み、対象 axis と一致しなければエラー。
 
 このファイルは「**現在のモード 1 ビット**」だけを保持する最小限の状態。値 (RGB / 温度 / 明るさ) はすべて GET status から取るので、ローカルとデバイスがズレて困る情報量はモードビットだけに限定される。
+
+#### モード drift について
+
+別端末や公式アプリでモードが変えられた場合、本 CLI のモードファイルは古い値のまま残る。`bump R/G/B/temp±` がモード不一致エラーで弾かれたら、`switchbot color <hex>` か `switchbot temp <K>` を一度実行して再同期する。これは仕様上の制約であり、実害は通知 1 回 + ユーザーの 1 アクションで済む範囲。
 
 ### `~/.switchbot/log` (自動生成・append-only)
 
@@ -167,7 +223,7 @@ ISO 8601 タイムスタンプ (JST) + レベル (`INFO` / `ERROR`) + 1 行メ�
 1. `~/.switchbot/` がなければ作成。
 2. `.env` がなければ以下のテンプレを書き出して exit 1:
    ```
-   # 1Password 連携:
+   # 1Password 連携 (推奨):
    SWITCHBOT_TOKEN=op://Personal/SwitchBot/token
    SWITCHBOT_SECRET=op://Personal/SwitchBot/secret
    # 直接値を書く場合 (テスト用途等):
@@ -175,8 +231,9 @@ ISO 8601 タイムスタンプ (JST) + レベル (`INFO` / `ERROR`) + 1 行メ�
    # SWITCHBOT_SECRET=...
    ```
    stderr: `~/.switchbot/.env を編集してください`
-3. `devices` がなければ空テンプレを書き出して exit 1。stderr: `switchbot list で deviceId を確認できます`
+3. `devices` がなければ「~/.switchbot/devices」セクションのテンプレを書き出して exit 1。stderr: `switchbot list で deviceId を確認できます`
 4. `mode` がなくても起動は通る (bump R/G/B/temp 系はエラーになるが、color/temp/bright/on/off/list は問題なく動く)。
+5. `directories::BaseDirs::new()` が `None` を返す環境 (`HOME` 未設定など、macOS では稀) は exit 1。stderr: `ホームディレクトリを特定できません`
 
 ## API 詳細
 
@@ -197,7 +254,7 @@ ISO 8601 タイムスタンプ (JST) + レベル (`INFO` / `ERROR`) + 1 行メ�
 | `sign` | `base64(HMAC-SHA256(token + t + nonce, secret))` を全大文字化した文字列 |
 | `Content-Type` | `application/json` |
 
-SwitchBot v1.1 仕様で base64 結果を **uppercase 化する**点に注意 (標準的 base64 と異なる)。`signing.rs` のユニットテストで既知ベクトルにより検証する。
+SwitchBot v1.1 仕様で base64 結果を **uppercase 化する**点に注意 (標準的 base64 と異なる)。Rust の `String::to_uppercase()` を base64 文字列全体に適用する。base64 は `[A-Za-z0-9+/=]` のみで構成されるため、影響を受けるのは `a-z` のみ (`+` `/` `=` `0-9` は変化なし)。SwitchBot 公式の Python サンプル (`base64.b64encode(...).decode().upper()` 相当) と等価。`signing.rs` のユニットテストで既知ベクトルにより検証する。
 
 ### コマンド送信ボディ
 
@@ -226,9 +283,20 @@ GET status で返る Color Bulb の `color` / `colorTemperature` フィールド
 
 レスポンス JSON の `statusCode == 100` を成功とみなす。それ以外は `body.message` をエラー詳細として通知 + log に含める。
 
-### レート制限
+### レート制限と HTTP エラー
 
-1 token あたり 10,000 calls/day。超過時は 401。`bump` 1 回で 2 calls (GET status + POST command) 消費するため、5,000 bump/day までは安全。特別なハンドリングは行わず、401 は通常のエラーパスで通知する。
+1 token あたり 10,000 calls/day。`bump` 1 回で 2 calls (GET status + POST command) 消費するため、5,000 bump/day までは安全。
+
+レート超過は SwitchBot v1.1 では一般に **HTTP 429** が返る (古い記述で 401 とされている資料もある)。本 CLI では特定の HTTP ステータスに固有の処理を持たず、**HTTP エラー (4xx/5xx) はステータスコードと `body.message` をそのままエラーパスに乗せて通知 + log に出力**する。`statusCode != 100` の正常 JSON レスポンスも同様に `body.message` をエラー扱いする。
+
+### HTTP タイムアウトとリトライ
+
+reqwest クライアントに **5 秒のタイムアウト**を設定する (デフォルトは無限で、ネットワーク断時にハングする)。タイムアウト発生時は通常のエラーパスで通知 + log。
+
+**リトライは行わない**。理由:
+- `setColor` `setBrightness` 等は冪等だが、`bump` 系は GET → 計算 → POST のシーケンスでありリトライすると意図しない多重適用が起こりうる
+- Stream Deck の指フィードバックを長時間待たせる UX が悪い
+- 失敗時はユーザーがもう一度ボタンを押す方が予測可能
 
 ## エラーハンドリングとフィードバック
 
@@ -236,13 +304,15 @@ GET status で返る Color Bulb の `color` / `colorTemperature` フィールド
 
 | 失敗の種類 | stderr | 通知 | log |
 |---|---|---|---|
+| ホームディレクトリ特定不可 (`HOME` 未設定など) | ◯ | × | × |
 | `~/.switchbot/.env` 不在 (初回起動) | ◯ | × | × |
 | `~/.switchbot/devices` 不在 (初回起動) | ◯ | × | × |
 | 1Password 解決失敗 (`op` 未インストール / lock 中 / item 不在) | ◯ | ◯ | ◯ |
 | 引数バリデーション (hex 不正、温度範囲外、bump axis 不正) | ◯ | ◯ | ◯ |
 | モードファイル未作成での `bump R/G/B/temp±` | ◯ | ◯ | ◯ |
 | モード不一致 (`bump R+` in temp mode 等) | ◯ | ◯ | ◯ |
-| API エラー (HTTP error / `statusCode != 100`) | ◯ | ◯ | ◯ |
+| HTTP タイムアウト (5 秒) | ◯ | ◯ | ◯ |
+| API エラー (HTTP 4xx/5xx / `statusCode != 100`) | ◯ | ◯ | ◯ |
 
 設定ファイル不在のときだけ通知を出さない理由: その状況はユーザーが対話的にセットアップしている最中であり、ターミナルで stderr が見えているはずだから。
 
@@ -328,9 +398,9 @@ Stream Deck からの呼び出し側 (`stream-deck-misc` の `.sh`) はフルパ
 
 - macOS (Apple Silicon / Intel)
 - Rust 1.70 以上
-- 1Password CLI (`op`) v2 以上、PATH 上に配置
-- 1Password アプリの biometric unlock を有効化推奨
 - SwitchBot アプリでクラウドサービスを有効化済みの Color Bulb
+- 1Password CLI (`op`) v2 以上、PATH 上に配置 — `.env` に `op://` 参照を書く場合のみ必須
+- 1Password アプリの biometric unlock を有効化推奨
 
 ## 初版に含めない項目
 
