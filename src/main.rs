@@ -1,3 +1,7 @@
+use clap::Parser;
+
+mod cli;
+
 fn main() {
-    println!("Hello, world!");
+    let _ = cli::Cli::try_parse_from(std::env::args());
 }
