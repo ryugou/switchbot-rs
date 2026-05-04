@@ -5,6 +5,7 @@ use reqwest::header::{HeaderMap, HeaderValue, CONTENT_TYPE};
 use serde::Deserialize;
 use std::time::Duration;
 
+#[allow(dead_code)]
 const BASE_URL: &str = "https://api.switch-bot.com";
 
 #[derive(Deserialize, Debug)]
@@ -61,9 +62,11 @@ pub fn parse_color_str(s: &str) -> anyhow::Result<(u8, u8, u8)> {
 pub struct Client {
     pub token: String,
     pub secret: String,
+    #[allow(dead_code)]
     http: reqwest::blocking::Client,
 }
 
+#[allow(dead_code)]
 impl Client {
     pub fn new(token: String, secret: String) -> Result<Self> {
         let http = reqwest::blocking::Client::builder()

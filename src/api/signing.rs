@@ -5,6 +5,7 @@ use sha2::Sha256;
 /// SwitchBot v1.1 仕様の sign ヘッダ値を計算する。
 ///
 /// `base64(HMAC-SHA256(token + t + nonce, secret))` を全大文字化して返す。
+#[allow(dead_code)]
 pub fn compute_sign(token: &str, secret: &str, t: i64, nonce: &str) -> String {
     let data = format!("{}{}{}", token, t, nonce);
     let mut mac =
