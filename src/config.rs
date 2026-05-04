@@ -1,0 +1,92 @@
+use std::fs;
+use std::path::Path;
+
+use anyhow::{anyhow, Context, Result};
+use serde::Deserialize;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Mode {
+    Rgb,
+    Temp,
+}
+
+#[derive(Deserialize)]
+struct ModeFile {
+    mode: String,
+}
+
+/// モードファイルを読み込む。ファイルが存在しなければ Ok(None)。
+pub fn read_mode(path: &Path) -> Result<Option<Mode>> {
+    if !path.exists() {
+        return Ok(None);
+    }
+    let content = fs::read_to_string(path)
+        .with_context(|| format!("failed to read mode file: {}", path.display()))?;
+    let parsed: ModeFile = toml::from_str(&content)
+        .with_context(|| format!("failed to parse mode file: {}", path.display()))?;
+    match parsed.mode.as_str() {
+        "rgb" => Ok(Some(Mode::Rgb)),
+        "temp" => Ok(Some(Mode::Temp)),
+        other => Err(anyhow!(
+            "invalid mode value '{}': expected 'rgb' or 'temp'",
+            other
+        )),
+    }
+}
+
+/// モードファイルを書き出す。親ディレクトリが存在する前提。
+pub fn write_mode(path: &Path, mode: Mode) -> Result<()> {
+    let m = match mode {
+        Mode::Rgb => "rgb",
+        Mode::Temp => "temp",
+    };
+    let content = format!("mode = \"{}\"\n", m);
+    fs::write(path, content)
+        .with_context(|| format!("failed to write mode file: {}", path.display()))?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn round_trip_rgb() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("mode");
+        write_mode(&path, Mode::Rgb).unwrap();
+        assert_eq!(read_mode(&path).unwrap(), Some(Mode::Rgb));
+    }
+
+    #[test]
+    fn round_trip_temp() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("mode");
+        write_mode(&path, Mode::Temp).unwrap();
+        assert_eq!(read_mode(&path).unwrap(), Some(Mode::Temp));
+    }
+
+    #[test]
+    fn missing_file_returns_none() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("mode");
+        assert_eq!(read_mode(&path).unwrap(), None);
+    }
+
+    #[test]
+    fn invalid_value_errors() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("mode");
+        fs::write(&path, "mode = \"unknown\"").unwrap();
+        assert!(read_mode(&path).is_err());
+    }
+
+    #[test]
+    fn malformed_toml_errors() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("mode");
+        fs::write(&path, "this is not toml ===").unwrap();
+        assert!(read_mode(&path).is_err());
+    }
+}
