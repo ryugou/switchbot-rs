@@ -2,17 +2,13 @@ use base64::Engine;
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
 
-#[allow(dead_code)]
-type HmacSha256 = Hmac<Sha256>;
-
 /// SwitchBot v1.1 仕様の sign ヘッダ値を計算する。
 ///
 /// `base64(HMAC-SHA256(token + t + nonce, secret))` を全大文字化して返す。
-#[allow(dead_code)]
 pub fn compute_sign(token: &str, secret: &str, t: i64, nonce: &str) -> String {
     let data = format!("{}{}{}", token, t, nonce);
     let mut mac =
-        HmacSha256::new_from_slice(secret.as_bytes()).expect("HMAC accepts any key length");
+        Hmac::<Sha256>::new_from_slice(secret.as_bytes()).expect("HMAC accepts any key length");
     mac.update(data.as_bytes());
     let result = mac.finalize().into_bytes();
     base64::engine::general_purpose::STANDARD
