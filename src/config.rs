@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
+use std::process::Command;
 
 use anyhow::{anyhow, Context, Result};
 use serde::Deserialize;
@@ -100,6 +101,75 @@ pub fn parse_env_content(content: &str) -> HashMap<String, String> {
 /// 値のいずれかが op:// で始まれば true。
 pub fn has_op_reference(env: &HashMap<String, String>) -> bool {
     env.values().any(|v| v.starts_with("op://"))
+}
+
+#[derive(Debug, Clone)]
+pub struct Credentials {
+    pub token: String,
+    pub secret: String,
+}
+
+/// .env を読み、必要なら op inject で解決し、SWITCHBOT_TOKEN / SWITCHBOT_SECRET を返す。
+pub fn load_credentials(env_path: &Path) -> Result<Credentials> {
+    if !env_path.exists() {
+        return Err(anyhow!(".env file not found: {}", env_path.display()));
+    }
+    let raw = fs::read_to_string(env_path)
+        .with_context(|| format!("failed to read .env: {}", env_path.display()))?;
+    let raw_map = parse_env_content(&raw);
+
+    let resolved = if has_op_reference(&raw_map) {
+        resolve_with_op_inject(env_path)?
+    } else {
+        raw_map
+    };
+
+    let token = resolved
+        .get("SWITCHBOT_TOKEN")
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| {
+            anyhow!(
+                "SWITCHBOT_TOKEN is empty or missing in {}",
+                env_path.display()
+            )
+        })?
+        .clone();
+    let secret = resolved
+        .get("SWITCHBOT_SECRET")
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| {
+            anyhow!(
+                "SWITCHBOT_SECRET is empty or missing in {}",
+                env_path.display()
+            )
+        })?
+        .clone();
+
+    Ok(Credentials { token, secret })
+}
+
+fn resolve_with_op_inject(env_path: &Path) -> Result<HashMap<String, String>> {
+    let output = Command::new("op")
+        .arg("inject")
+        .arg("-i")
+        .arg(env_path)
+        .output()
+        .map_err(|e| {
+            anyhow!(
+                "failed to execute `op inject`: {}. Is the 1Password CLI (`op`) installed and on PATH?",
+                e
+            )
+        })?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(anyhow!(
+            "`op inject` failed (1Password unlock 状態を確認してください): {}",
+            stderr.trim()
+        ));
+    }
+    let stdout =
+        String::from_utf8(output.stdout).context("`op inject` returned non-UTF8 output")?;
+    Ok(parse_env_content(&stdout))
 }
 
 #[cfg(test)]
@@ -264,5 +334,38 @@ id = "abc"
     fn has_op_reference_empty_map_false() {
         let map: HashMap<String, String> = HashMap::new();
         assert!(!has_op_reference(&map));
+    }
+
+    #[test]
+    fn load_credentials_plain_values_ok() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join(".env");
+        fs::write(&path, "SWITCHBOT_TOKEN=tok\nSWITCHBOT_SECRET=sec\n").unwrap();
+        let creds = load_credentials(&path).unwrap();
+        assert_eq!(creds.token, "tok");
+        assert_eq!(creds.secret, "sec");
+    }
+
+    #[test]
+    fn load_credentials_missing_file_errors() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join(".env");
+        assert!(load_credentials(&path).is_err());
+    }
+
+    #[test]
+    fn load_credentials_missing_token_errors() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join(".env");
+        fs::write(&path, "SWITCHBOT_SECRET=sec\n").unwrap();
+        assert!(load_credentials(&path).is_err());
+    }
+
+    #[test]
+    fn load_credentials_empty_token_errors() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join(".env");
+        fs::write(&path, "SWITCHBOT_TOKEN=\nSWITCHBOT_SECRET=sec\n").unwrap();
+        assert!(load_credentials(&path).is_err());
     }
 }
