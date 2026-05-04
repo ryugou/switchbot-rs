@@ -31,21 +31,34 @@ pub enum Command {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
 pub enum BumpAxis {
-    #[value(name = "R+")]      RPlus,
-    #[value(name = "R-")]      RMinus,
-    #[value(name = "G+")]      GPlus,
-    #[value(name = "G-")]      GMinus,
-    #[value(name = "B+")]      BPlus,
-    #[value(name = "B-")]      BMinus,
-    #[value(name = "bright+")] BrightPlus,
-    #[value(name = "bright-")] BrightMinus,
-    #[value(name = "temp+")]   TempPlus,
-    #[value(name = "temp-")]   TempMinus,
+    #[value(name = "R+")]
+    RPlus,
+    #[value(name = "R-")]
+    RMinus,
+    #[value(name = "G+")]
+    GPlus,
+    #[value(name = "G-")]
+    GMinus,
+    #[value(name = "B+")]
+    BPlus,
+    #[value(name = "B-")]
+    BMinus,
+    #[value(name = "bright+")]
+    BrightPlus,
+    #[value(name = "bright-")]
+    BrightMinus,
+    #[value(name = "temp+")]
+    TempPlus,
+    #[value(name = "temp-")]
+    TempMinus,
 }
 
 fn parse_hex(s: &str) -> Result<(u8, u8, u8), String> {
     if s.len() != 6 {
-        return Err(format!("hex は 6 桁である必要があります (got {} 桁)", s.len()));
+        return Err(format!(
+            "hex は 6 桁である必要があります (got {} 桁)",
+            s.len()
+        ));
     }
     if !s.chars().all(|c| c.is_ascii_hexdigit()) {
         return Err(format!("hex は 16 進数である必要があります (got '{}')", s));
@@ -60,7 +73,9 @@ fn parse_brightness(s: &str) -> Result<u32, String> {
     if s == "max" {
         return Ok(100);
     }
-    let n: u32 = s.parse().map_err(|_| format!("整数または 'max' を指定してください (got '{}')", s))?;
+    let n: u32 = s
+        .parse()
+        .map_err(|_| format!("整数または 'max' を指定してください (got '{}')", s))?;
     if !(1..=100).contains(&n) {
         return Err(format!("明るさは 1-100 の範囲です (got {})", n));
     }
@@ -68,7 +83,9 @@ fn parse_brightness(s: &str) -> Result<u32, String> {
 }
 
 fn parse_temperature(s: &str) -> Result<u32, String> {
-    let n: u32 = s.parse().map_err(|_| format!("整数を指定してください (got '{}')", s))?;
+    let n: u32 = s
+        .parse()
+        .map_err(|_| format!("整数を指定してください (got '{}')", s))?;
     if !(2700..=6500).contains(&n) {
         return Err(format!("温度は 2700-6500 の範囲です (got {})", n));
     }
