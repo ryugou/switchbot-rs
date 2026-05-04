@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 
@@ -77,6 +78,28 @@ pub fn load_devices(path: &Path) -> Result<DefaultDevice> {
         return Err(anyhow!("[default] id is empty in {}", path.display()));
     }
     Ok(device)
+}
+
+/// .env 形式テキストを KEY=VALUE のマップにパースする。
+/// 空行と '#' で始まるコメント行は無視する。値の前後空白は trim する。
+/// 値の引用符 (' or ") は剥がさない (op inject の出力もリテラルもそのまま扱える)。
+pub fn parse_env_content(content: &str) -> HashMap<String, String> {
+    let mut map = HashMap::new();
+    for line in content.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if let Some((key, value)) = line.split_once('=') {
+            map.insert(key.trim().to_string(), value.trim().to_string());
+        }
+    }
+    map
+}
+
+/// 値のいずれかが op:// で始まれば true。
+pub fn has_op_reference(env: &HashMap<String, String>) -> bool {
+    env.values().any(|v| v.starts_with("op://"))
 }
 
 #[cfg(test)]
@@ -193,5 +216,53 @@ id = "abc"
         let device = load_devices(&path).unwrap();
         assert_eq!(device.id, "abc");
         assert_eq!(device.r#type, "");
+    }
+
+    #[test]
+    fn parse_env_basic() {
+        let content = "FOO=bar\nBAZ=qux\n";
+        let map = parse_env_content(content);
+        assert_eq!(map.get("FOO"), Some(&"bar".to_string()));
+        assert_eq!(map.get("BAZ"), Some(&"qux".to_string()));
+    }
+
+    #[test]
+    fn parse_env_skips_comments_and_blank() {
+        let content = "\n# comment\nFOO=bar\n\n# another\nBAZ=qux\n";
+        let map = parse_env_content(content);
+        assert_eq!(map.len(), 2);
+        assert_eq!(map.get("FOO"), Some(&"bar".to_string()));
+    }
+
+    #[test]
+    fn parse_env_trims_whitespace() {
+        let content = "  FOO  =  bar  \n";
+        let map = parse_env_content(content);
+        assert_eq!(map.get("FOO"), Some(&"bar".to_string()));
+    }
+
+    #[test]
+    fn parse_env_keeps_op_reference_literally() {
+        let content = "TOKEN=op://Personal/Item/credential\n";
+        let map = parse_env_content(content);
+        assert_eq!(
+            map.get("TOKEN"),
+            Some(&"op://Personal/Item/credential".to_string())
+        );
+    }
+
+    #[test]
+    fn has_op_reference_detects_op_prefix() {
+        let mut map = HashMap::new();
+        map.insert("A".to_string(), "plain".to_string());
+        assert!(!has_op_reference(&map));
+        map.insert("B".to_string(), "op://x/y/z".to_string());
+        assert!(has_op_reference(&map));
+    }
+
+    #[test]
+    fn has_op_reference_empty_map_false() {
+        let map: HashMap<String, String> = HashMap::new();
+        assert!(!has_op_reference(&map));
     }
 }
