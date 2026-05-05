@@ -1,8 +1,11 @@
+use std::collections::HashSet;
+
 use anyhow::{anyhow, Result};
+use toml::value::{Table, Value};
 
 use crate::api::{self, parse_color_str, Client};
 use crate::cli::{BumpAxis, Command};
-use crate::config::{self, Context, Mode};
+use crate::config::{self, Context, DefaultDevice, Mode};
 
 pub const RGB_STEP: i32 = 16;
 pub const BRIGHT_STEP: i32 = 10;
@@ -83,46 +86,81 @@ pub fn require_mode(actual: Option<Mode>, expected: Mode) -> Result<()> {
     }
 }
 
+/// device が必要なコマンドで ctx.device が None の場合にエラーを返す。
+fn require_device(ctx: &Context) -> Result<&DefaultDevice> {
+    ctx.device.as_ref().ok_or_else(|| {
+        anyhow!(
+            "デバイスが未設定です。switchbot list で deviceId を確認し、\
+             ~/.switchbot/devices の [default] id を編集してください。"
+        )
+    })
+}
+
 pub fn handle(command: &Command, ctx: &Context) -> Result<String> {
     let client = Client::new(
         ctx.credentials.token.clone(),
         ctx.credentials.secret.clone(),
     )?;
     match command {
-        Command::Color { rgb: (r, g, b) } => cmd_color(&client, ctx, *r, *g, *b),
-        Command::Bright { value } => cmd_bright(&client, ctx, *value),
-        Command::Temp { kelvin } => cmd_temp(&client, ctx, *kelvin),
-        Command::Bump { axis } => cmd_bump(&client, ctx, *axis),
-        Command::On => cmd_on(&client, ctx),
-        Command::Off => cmd_off(&client, ctx),
         Command::List => cmd_list(&client),
+        Command::Color { rgb: (r, g, b) } => {
+            let device = require_device(ctx)?;
+            cmd_color(&client, ctx, device, *r, *g, *b)
+        }
+        Command::Bright { value } => {
+            let device = require_device(ctx)?;
+            cmd_bright(&client, device, *value)
+        }
+        Command::Temp { kelvin } => {
+            let device = require_device(ctx)?;
+            cmd_temp(&client, ctx, device, *kelvin)
+        }
+        Command::Bump { axis } => {
+            let device = require_device(ctx)?;
+            cmd_bump(&client, ctx, device, *axis)
+        }
+        Command::On => {
+            let device = require_device(ctx)?;
+            cmd_on(&client, device)
+        }
+        Command::Off => {
+            let device = require_device(ctx)?;
+            cmd_off(&client, device)
+        }
     }
 }
 
-fn cmd_color(client: &Client, ctx: &Context, r: u8, g: u8, b: u8) -> Result<String> {
-    client.set_color(&ctx.device.id, r, g, b)?;
+fn cmd_color(
+    client: &Client,
+    ctx: &Context,
+    device: &DefaultDevice,
+    r: u8,
+    g: u8,
+    b: u8,
+) -> Result<String> {
+    client.set_color(&device.id, r, g, b)?;
     config::write_mode(&ctx.mode_path, Mode::Rgb)?;
     Ok(format!("color {:02X}{:02X}{:02X} ok", r, g, b))
 }
 
-fn cmd_bright(client: &Client, ctx: &Context, value: u32) -> Result<String> {
-    client.set_brightness(&ctx.device.id, value)?;
+fn cmd_bright(client: &Client, device: &DefaultDevice, value: u32) -> Result<String> {
+    client.set_brightness(&device.id, value)?;
     Ok(format!("bright {} ok", value))
 }
 
-fn cmd_temp(client: &Client, ctx: &Context, kelvin: u32) -> Result<String> {
-    client.set_color_temperature(&ctx.device.id, kelvin)?;
+fn cmd_temp(client: &Client, ctx: &Context, device: &DefaultDevice, kelvin: u32) -> Result<String> {
+    client.set_color_temperature(&device.id, kelvin)?;
     config::write_mode(&ctx.mode_path, Mode::Temp)?;
     Ok(format!("temp {} ok", kelvin))
 }
 
-fn cmd_on(client: &Client, ctx: &Context) -> Result<String> {
-    client.turn_on(&ctx.device.id)?;
+fn cmd_on(client: &Client, device: &DefaultDevice) -> Result<String> {
+    client.turn_on(&device.id)?;
     Ok("on ok".to_string())
 }
 
-fn cmd_off(client: &Client, ctx: &Context) -> Result<String> {
-    client.turn_off(&ctx.device.id)?;
+fn cmd_off(client: &Client, device: &DefaultDevice) -> Result<String> {
+    client.turn_off(&device.id)?;
     Ok("off ok".to_string())
 }
 
@@ -131,13 +169,18 @@ fn cmd_list(client: &Client) -> Result<String> {
     Ok(format_devices_toml(&devices))
 }
 
-fn cmd_bump(client: &Client, ctx: &Context, axis: BumpAxis) -> Result<String> {
+fn cmd_bump(
+    client: &Client,
+    ctx: &Context,
+    device: &DefaultDevice,
+    axis: BumpAxis,
+) -> Result<String> {
     let mode = config::read_mode(&ctx.mode_path)?;
     let delta = axis_delta(axis);
     match delta {
         AxisDelta::Red(d) | AxisDelta::Green(d) | AxisDelta::Blue(d) => {
             require_mode(mode, Mode::Rgb)?;
-            let status = client.get_status(&ctx.device.id)?;
+            let status = client.get_status(&device.id)?;
             let (r0, g0, b0) = parse_color_str(&status.color)?;
             let (r, g, b) = match delta {
                 AxisDelta::Red(_) => (bump_rgb_channel(r0, d), g0, b0),
@@ -145,45 +188,75 @@ fn cmd_bump(client: &Client, ctx: &Context, axis: BumpAxis) -> Result<String> {
                 AxisDelta::Blue(_) => (r0, g0, bump_rgb_channel(b0, d)),
                 _ => unreachable!("outer match arm guarantees Red|Green|Blue"),
             };
-            client.set_color(&ctx.device.id, r, g, b)?;
+            client.set_color(&device.id, r, g, b)?;
             Ok(format!("bump {} ok ({}:{}:{})", axis_label(axis), r, g, b))
         }
         AxisDelta::Brightness(d) => {
-            let status = client.get_status(&ctx.device.id)?;
+            let status = client.get_status(&device.id)?;
             let new_value = bump_brightness(status.brightness, d);
-            client.set_brightness(&ctx.device.id, new_value)?;
+            client.set_brightness(&device.id, new_value)?;
             Ok(format!("bump {} ok ({})", axis_label(axis), new_value))
         }
         AxisDelta::Temperature(d) => {
             require_mode(mode, Mode::Temp)?;
-            let status = client.get_status(&ctx.device.id)?;
+            let status = client.get_status(&device.id)?;
             let new_k = bump_temperature(status.color_temperature, d);
-            client.set_color_temperature(&ctx.device.id, new_k)?;
+            client.set_color_temperature(&device.id, new_k)?;
             Ok(format!("bump {} ok ({}K)", axis_label(axis), new_k))
         }
     }
 }
 
 /// list 出力用に Device 配列を TOML 形式に整形する。
+/// toml クレート経由で生成するため、特殊文字が正しくエスケープされる。
 /// 1 台なら [default]、複数なら deviceName を kebab-case 化したセクション名にする。
+/// セクション名が衝突する場合は "-2", "-3" ... を付与して一意にする。
 pub fn format_devices_toml(devices: &[api::Device]) -> String {
     let single = devices.len() == 1;
-    let mut out = String::new();
-    for (i, d) in devices.iter().enumerate() {
-        if i > 0 {
-            out.push('\n');
-        }
-        let section = if single {
+    let mut sections: Vec<(String, Table)> = Vec::with_capacity(devices.len());
+    let mut seen: HashSet<String> = HashSet::new();
+
+    for d in devices {
+        let base_key = if single {
             "default".to_string()
         } else {
             sanitize_section_key(&d.name)
         };
-        out.push_str(&format!("[{}]\n", section));
-        out.push_str(&format!("id = \"{}\"\n", d.id));
-        out.push_str(&format!("type = \"{}\"\n", d.kind));
-        out.push_str(&format!("name = \"{}\"\n", d.name));
+        let key = unique_key(&base_key, &mut seen);
+
+        let mut table = Table::new();
+        table.insert("id".to_string(), Value::String(d.id.clone()));
+        table.insert("type".to_string(), Value::String(d.kind.clone()));
+        table.insert("name".to_string(), Value::String(d.name.clone()));
+        sections.push((key, table));
+    }
+
+    let mut out = String::new();
+    for (i, (key, table)) in sections.into_iter().enumerate() {
+        if i > 0 {
+            out.push('\n');
+        }
+        let mut wrapper = Table::new();
+        wrapper.insert(key, Value::Table(table));
+        out.push_str(&toml::to_string(&Value::Table(wrapper)).unwrap_or_default());
     }
     out
+}
+
+fn unique_key(base: &str, seen: &mut HashSet<String>) -> String {
+    if seen.insert(base.to_string()) {
+        return base.to_string();
+    }
+    for n in 2..=999 {
+        let candidate = format!("{}-{}", base, n);
+        if seen.insert(candidate.clone()) {
+            return candidate;
+        }
+    }
+    // 999 を超えるケースは事実上起こり得ないが、衝突しないよう何かを返す
+    let fallback = format!("{}-{}", base, seen.len());
+    seen.insert(fallback.clone());
+    fallback
 }
 
 fn sanitize_section_key(name: &str) -> String {
@@ -355,5 +428,49 @@ mod tests {
         assert!(out.contains("[living-bulb]"));
         assert!(out.contains("[bedroom-plug]"));
         assert!(!out.contains("[default]"));
+    }
+
+    // --- 修正 3 テスト ---
+
+    #[test]
+    fn format_devices_escapes_special_characters() {
+        let devices = vec![api::Device {
+            id: "01-x".to_string(),
+            name: "Living \"Smart\" Bulb\nNew Line".to_string(),
+            kind: "Color Bulb".to_string(),
+        }];
+        let out = format_devices_toml(&devices);
+        // toml::to_string は " と \n を含む文字列を安全にエンコードする。
+        // 具体的には multiline 基本文字列 ("""...""") またはエスケープシーケンス形式で出力される。
+        // いずれにせよ元の文字列を TOML デシリアライズで復元できることを確認する。
+        let parsed: toml::Value =
+            toml::from_str(&out).expect("format_devices_toml must produce valid TOML");
+        let name = parsed["default"]["name"]
+            .as_str()
+            .expect("name must be a string");
+        assert_eq!(name, "Living \"Smart\" Bulb\nNew Line");
+    }
+
+    #[test]
+    fn format_devices_unique_keys_on_collision() {
+        let devices = vec![
+            api::Device {
+                id: "01".to_string(),
+                name: "Bulb".to_string(),
+                kind: "Color Bulb".to_string(),
+            },
+            api::Device {
+                id: "02".to_string(),
+                name: "Bulb".to_string(), // 同名
+                kind: "Color Bulb".to_string(),
+            },
+        ];
+        let out = format_devices_toml(&devices);
+        assert!(out.contains("[bulb]"), "first should be [bulb]: {}", out);
+        assert!(
+            out.contains("[bulb-2]"),
+            "second should be [bulb-2]: {}",
+            out
+        );
     }
 }

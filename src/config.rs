@@ -41,15 +41,17 @@ pub fn read_mode(path: &Path) -> Result<Option<Mode>> {
     }
 }
 
-/// モードファイルを書き出す。親ディレクトリが存在する前提。
+/// モードファイルを atomic write で書き出す。親ディレクトリが存在する前提。
 pub fn write_mode(path: &Path, mode: Mode) -> Result<()> {
     let m = match mode {
         Mode::Rgb => "rgb",
         Mode::Temp => "temp",
     };
     let content = format!("mode = \"{}\"\n", m);
-    fs::write(path, content)
-        .with_context(|| format!("failed to write mode file: {}", path.display()))?;
+    let tmp = path.with_extension("tmp");
+    fs::write(&tmp, content).with_context(|| format!("failed to write {}", tmp.display()))?;
+    fs::rename(&tmp, path)
+        .with_context(|| format!("failed to rename {} -> {}", tmp.display(), path.display()))?;
     Ok(())
 }
 
@@ -186,10 +188,23 @@ fn resolve_with_op_inject(env_path: &Path) -> Result<HashMap<String, String>> {
     Ok(parse_env_content(&stdout))
 }
 
+/// .env の permission を検証し、group/other に読み権限があれば自動で 0o600 相当に修正する。
+fn enforce_env_permissions(path: &Path) -> Result<()> {
+    let metadata =
+        fs::metadata(path).with_context(|| format!("failed to stat {}", path.display()))?;
+    let current_mode = metadata.permissions().mode();
+    if current_mode & 0o077 != 0 {
+        // group/other に何らかの権限がある → 0o600 に強制
+        fs::set_permissions(path, fs::Permissions::from_mode(0o600))
+            .with_context(|| format!("failed to enforce 0o600 on {}", path.display()))?;
+    }
+    Ok(())
+}
+
 #[derive(Debug)]
 pub struct Context {
     pub credentials: Credentials,
-    pub device: DefaultDevice,
+    pub device: Option<DefaultDevice>,
     pub mode_path: PathBuf,
     pub log_path: PathBuf,
 }
@@ -219,9 +234,17 @@ pub fn config_dir() -> Result<PathBuf> {
 }
 
 /// 必要なディレクトリ・テンプレートを用意し、Context を組み立てる。
-/// `.env` または `devices` がなければテンプレを書き出して `BootstrapNeeded` 相当のエラーで返す。
+/// `.env` がなければテンプレを書き出して編集を促すエラーで返す。
+/// `devices` がない・空 id の場合は `device = None` として list に進ませる。
 pub fn load_context() -> Result<Context> {
-    let dir = config_dir()?;
+    let base = directories::BaseDirs::new()
+        .ok_or_else(|| anyhow!("ホームディレクトリを特定できません"))?;
+    load_context_at(base.home_dir())
+}
+
+/// load_context の内部実装。home_dir を受け取るため、テストで差し替え可能。
+pub fn load_context_at(home_dir: &Path) -> Result<Context> {
+    let dir = home_dir.join(".switchbot");
     fs::create_dir_all(&dir).with_context(|| format!("failed to create {}", dir.display()))?;
 
     let env_path = dir.join(".env");
@@ -229,8 +252,7 @@ pub fn load_context() -> Result<Context> {
     let mode_path = dir.join("mode");
     let log_path = dir.join("log");
 
-    let mut needs_setup = Vec::new();
-
+    // .env テンプレ作成 (新規時のみ)
     let env_created = match std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -248,11 +270,9 @@ pub fn load_context() -> Result<Context> {
             return Err(e).with_context(|| format!("failed to create {}", env_path.display()));
         }
     };
-    if env_created {
-        needs_setup.push(format!("{} を編集してください", env_path.display()));
-    }
 
-    let devices_created = match std::fs::OpenOptions::new()
+    // devices テンプレ作成 (新規時のみ、ただし list で動くために exit はしない)
+    let _devices_created = match std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
         .open(&devices_path)
@@ -267,19 +287,19 @@ pub fn load_context() -> Result<Context> {
             return Err(e).with_context(|| format!("failed to create {}", devices_path.display()));
         }
     };
-    if devices_created {
-        needs_setup.push(format!(
-            "{} を編集してください (switchbot list で deviceId を確認)",
-            devices_path.display()
-        ));
+
+    // .env が新規作成された場合は編集を促して exit。これは必須。
+    if env_created {
+        return Err(anyhow!("{} を編集してください", env_path.display()));
     }
 
-    if !needs_setup.is_empty() {
-        return Err(anyhow!("{}", needs_setup.join("\n")));
-    }
+    // .env の権限を検証し、必要なら 0o600 に自動修正
+    enforce_env_permissions(&env_path)?;
 
     let credentials = load_credentials(&env_path)?;
-    let device = load_devices(&devices_path)?;
+
+    // devices ファイルが存在しても空 id のままなら device = None として list に進ませる
+    let device = load_devices(&devices_path).ok();
 
     Ok(Context {
         credentials,
@@ -497,5 +517,99 @@ id = "abc"
     fn devices_template_contains_default_section() {
         assert!(DEVICES_TEMPLATE.contains("[default]"));
         assert!(DEVICES_TEMPLATE.contains("id = \"\""));
+    }
+
+    // --- 修正 1 テスト: load_context_at ---
+
+    fn make_valid_env(cfg_dir: &Path) {
+        let env_path = cfg_dir.join(".env");
+        fs::write(&env_path, "SWITCHBOT_TOKEN=tok\nSWITCHBOT_SECRET=sec\n").unwrap();
+        fs::set_permissions(&env_path, fs::Permissions::from_mode(0o600)).unwrap();
+    }
+
+    #[test]
+    fn load_context_with_empty_devices_yields_none_device() {
+        let dir = tempdir().unwrap();
+        let cfg_dir = dir.path().join(".switchbot");
+        fs::create_dir_all(&cfg_dir).unwrap();
+        make_valid_env(&cfg_dir);
+        fs::write(
+            cfg_dir.join("devices"),
+            "[default]\nid = \"\"\ntype = \"Color Bulb\"\n",
+        )
+        .unwrap();
+
+        let ctx = load_context_at(dir.path()).unwrap();
+        assert!(ctx.device.is_none());
+    }
+
+    #[test]
+    fn load_context_with_missing_devices_yields_none_device() {
+        let dir = tempdir().unwrap();
+        let cfg_dir = dir.path().join(".switchbot");
+        fs::create_dir_all(&cfg_dir).unwrap();
+        make_valid_env(&cfg_dir);
+        // devices ファイルなし → テンプレが作られ device = None
+
+        let ctx = load_context_at(dir.path()).unwrap();
+        assert!(ctx.device.is_none());
+    }
+
+    #[test]
+    fn load_context_with_valid_devices_yields_some_device() {
+        let dir = tempdir().unwrap();
+        let cfg_dir = dir.path().join(".switchbot");
+        fs::create_dir_all(&cfg_dir).unwrap();
+        make_valid_env(&cfg_dir);
+        fs::write(
+            cfg_dir.join("devices"),
+            "[default]\nid = \"abc-123\"\ntype = \"Color Bulb\"\n",
+        )
+        .unwrap();
+
+        let ctx = load_context_at(dir.path()).unwrap();
+        assert!(ctx.device.is_some());
+        assert_eq!(ctx.device.unwrap().id, "abc-123");
+    }
+
+    #[test]
+    fn load_context_new_env_requires_edit() {
+        // .env が存在しない場合は "編集してください" エラーが返る
+        let dir = tempdir().unwrap();
+        let err = load_context_at(dir.path()).unwrap_err();
+        assert!(err.to_string().contains("編集してください"));
+    }
+
+    // --- 修正 2 テスト: enforce_env_permissions ---
+
+    #[test]
+    fn enforce_env_permissions_tightens_loose_perms() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join(".env");
+        fs::write(&path, "SWITCHBOT_TOKEN=x\n").unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+
+        enforce_env_permissions(&path).unwrap();
+
+        let mode = fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(
+            mode & 0o777,
+            0o600,
+            "expected 0o600 after enforcement, got {:o}",
+            mode
+        );
+    }
+
+    #[test]
+    fn enforce_env_permissions_keeps_strict_perms() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join(".env");
+        fs::write(&path, "SWITCHBOT_TOKEN=x\n").unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+
+        enforce_env_permissions(&path).unwrap();
+
+        let mode = fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
     }
 }
