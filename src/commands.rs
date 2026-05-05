@@ -90,8 +90,9 @@ pub fn require_mode(actual: Option<Mode>, expected: Mode) -> Result<()> {
 fn require_device(ctx: &Context) -> Result<&DefaultDevice> {
     ctx.device.as_ref().ok_or_else(|| {
         anyhow!(
-            "デバイスが未設定です。switchbot list で deviceId を確認し、\
-             ~/.switchbot/devices の [default] id を編集してください。"
+            "デバイスが未設定です。`switchbot list > ~/.switchbot/devices` を実行し、\
+             使うデバイスのセクション名を [default] にしてください \
+             (デバイスが 1 台のみなら自動で [default] になります)。"
         )
     })
 }

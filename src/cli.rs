@@ -207,4 +207,15 @@ mod tests {
         assert!(matches!(parse(&["off"]).unwrap().command, Command::Off));
         assert!(matches!(parse(&["list"]).unwrap().command, Command::List));
     }
+
+    #[test]
+    fn parse_with_no_subcommand_returns_help_on_missing() {
+        let result = Cli::try_parse_from(["switchbot"]);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(matches!(
+            err.kind(),
+            clap::error::ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand
+        ));
+    }
 }

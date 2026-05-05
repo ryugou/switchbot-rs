@@ -20,17 +20,23 @@ fn run() -> Result<(), ()> {
     let cli = match cli::Cli::try_parse() {
         Ok(c) => c,
         Err(e) => {
-            // help/version は exit 0 で stdout に出す (notify しない)
+            // help/version の意図的な表示は exit 0 で stdout に出す (notify しない)
             if matches!(
                 e.kind(),
-                clap::error::ErrorKind::DisplayHelp
-                    | clap::error::ErrorKind::DisplayVersion
-                    | clap::error::ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand
+                clap::error::ErrorKind::DisplayHelp | clap::error::ErrorKind::DisplayVersion
             ) {
                 e.print().ok();
                 return Ok(());
             }
-            // 引数バリデーション失敗: stderr + log + notify
+            // 引数なし起動: usage を表示して exit 1。notify は不要 (画面に help が見える)。
+            if matches!(
+                e.kind(),
+                clap::error::ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand
+            ) {
+                e.print().ok();
+                return Err(());
+            }
+            // それ以外の引数バリデーションエラー: stderr + log + notify
             let msg = e.to_string();
             if let Some(ref lp) = log_path {
                 feedback::log_error(lp, &msg);
@@ -67,11 +73,7 @@ fn run() -> Result<(), ()> {
                 use std::io::Write as _;
                 print!("{}", msg);
                 let _ = std::io::stdout().flush();
-                let device_count = msg.matches('[').count();
-                feedback::log_info(
-                    &ctx.log_path,
-                    &format!("list ok ({} device(s))", device_count),
-                );
+                feedback::log_info(&ctx.log_path, "list ok");
             } else {
                 feedback::log_info(&ctx.log_path, &msg);
             }
