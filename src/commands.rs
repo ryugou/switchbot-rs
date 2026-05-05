@@ -238,7 +238,10 @@ pub fn format_devices_toml(devices: &[api::Device]) -> String {
         }
         let mut wrapper = Table::new();
         wrapper.insert(key, Value::Table(table));
-        out.push_str(&toml::to_string(&Value::Table(wrapper)).unwrap_or_default());
+        out.push_str(
+            &toml::to_string(&Value::Table(wrapper))
+                .expect("toml::to_string of String/Table never fails"),
+        );
     }
     out
 }

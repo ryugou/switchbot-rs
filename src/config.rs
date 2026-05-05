@@ -42,16 +42,23 @@ pub fn read_mode(path: &Path) -> Result<Option<Mode>> {
 }
 
 /// モードファイルを atomic write で書き出す。親ディレクトリが存在する前提。
+/// 同時実行時の tmp 衝突を避けるため NamedTempFile を使い、persist で rename する。
 pub fn write_mode(path: &Path, mode: Mode) -> Result<()> {
     let m = match mode {
         Mode::Rgb => "rgb",
         Mode::Temp => "temp",
     };
     let content = format!("mode = \"{}\"\n", m);
-    let tmp = path.with_extension("tmp");
-    fs::write(&tmp, content).with_context(|| format!("failed to write {}", tmp.display()))?;
-    fs::rename(&tmp, path)
-        .with_context(|| format!("failed to rename {} -> {}", tmp.display(), path.display()))?;
+
+    let parent = path
+        .parent()
+        .ok_or_else(|| anyhow!("invalid mode file path (no parent): {}", path.display()))?;
+    let mut tmp = tempfile::NamedTempFile::new_in(parent)
+        .with_context(|| format!("failed to create temp file in {}", parent.display()))?;
+    tmp.write_all(content.as_bytes())
+        .with_context(|| format!("failed to write temp mode file: {}", tmp.path().display()))?;
+    tmp.persist(path)
+        .map_err(|e| anyhow!("failed to persist mode file to {}: {}", path.display(), e))?;
     Ok(())
 }
 
@@ -70,13 +77,12 @@ struct DevicesFile {
 }
 
 /// devices ファイルを読み、[default] セクションを返す。
-/// 存在しないか [default] が無いか id が空ならエラー。
-pub fn load_devices(path: &Path) -> Result<DefaultDevice> {
+/// ファイル不在・[default] 不在・id 空 はすべて未設定 (`Ok(None)`) として扱う。
+/// TOML 構文エラー等の本当のエラーは `Err` で伝播する。
+pub fn load_devices(path: &Path) -> Result<Option<DefaultDevice>> {
     let content = match fs::read_to_string(path) {
         Ok(s) => s,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            return Err(anyhow!("devices file not found: {}", path.display()));
-        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(e) => {
             return Err(e)
                 .with_context(|| format!("failed to read devices file: {}", path.display()))
@@ -84,13 +90,14 @@ pub fn load_devices(path: &Path) -> Result<DefaultDevice> {
     };
     let parsed: DevicesFile = toml::from_str(&content)
         .with_context(|| format!("failed to parse devices file: {}", path.display()))?;
-    let device = parsed
-        .default
-        .ok_or_else(|| anyhow!("[default] section not found in {}", path.display()))?;
+    let device = match parsed.default {
+        Some(d) => d,
+        None => return Ok(None),
+    };
     if device.id.is_empty() {
-        return Err(anyhow!("[default] id is empty in {}", path.display()));
+        return Ok(None);
     }
-    Ok(device)
+    Ok(Some(device))
 }
 
 /// .env 形式テキストを KEY=VALUE のマップにパースする。
@@ -299,7 +306,8 @@ pub fn load_context_at(home_dir: &Path) -> Result<Context> {
     let credentials = load_credentials(&env_path)?;
 
     // devices ファイルが存在しても空 id のままなら device = None として list に進ませる
-    let device = load_devices(&devices_path).ok();
+    // TOML parse error 等の本当のエラーは ? で伝播する
+    let device = load_devices(&devices_path)?;
 
     Ok(Context {
         credentials,
@@ -367,21 +375,21 @@ name = "Living Bulb"
 "#,
         )
         .unwrap();
-        let device = load_devices(&path).unwrap();
+        let device = load_devices(&path).unwrap().unwrap();
         assert_eq!(device.id, "01-202311241234-12345678");
         assert_eq!(device.r#type, "Color Bulb");
         assert_eq!(device.name, "Living Bulb");
     }
 
     #[test]
-    fn load_devices_missing_file_errors() {
+    fn load_devices_missing_file_returns_none() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("devices");
-        assert!(load_devices(&path).is_err());
+        assert!(load_devices(&path).unwrap().is_none());
     }
 
     #[test]
-    fn load_devices_missing_default_section_errors() {
+    fn load_devices_missing_default_section_returns_none() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("devices");
         fs::write(
@@ -391,11 +399,11 @@ id = "x"
 "#,
         )
         .unwrap();
-        assert!(load_devices(&path).is_err());
+        assert!(load_devices(&path).unwrap().is_none());
     }
 
     #[test]
-    fn load_devices_empty_id_errors() {
+    fn load_devices_empty_id_returns_none() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("devices");
         fs::write(
@@ -406,7 +414,7 @@ type = "Color Bulb"
 "#,
         )
         .unwrap();
-        assert!(load_devices(&path).is_err());
+        assert!(load_devices(&path).unwrap().is_none());
     }
 
     #[test]
@@ -420,9 +428,17 @@ id = "abc"
 "#,
         )
         .unwrap();
-        let device = load_devices(&path).unwrap();
+        let device = load_devices(&path).unwrap().unwrap();
         assert_eq!(device.id, "abc");
         assert_eq!(device.r#type, "");
+    }
+
+    #[test]
+    fn load_devices_malformed_toml_errors() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("devices");
+        fs::write(&path, "this is === not toml ===").unwrap();
+        assert!(load_devices(&path).is_err());
     }
 
     #[test]
