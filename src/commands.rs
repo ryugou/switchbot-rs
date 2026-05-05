@@ -257,16 +257,18 @@ fn unique_key(base: &str, seen: &mut HashSet<String>) -> String {
     if seen.insert(base.to_string()) {
         return base.to_string();
     }
-    for n in 2..=999 {
-        let candidate = format!("{}-{}", base, n);
+    let mut counter: u32 = 2;
+    loop {
+        let candidate = format!("{}-{}", base, counter);
         if seen.insert(candidate.clone()) {
             return candidate;
         }
+        counter = counter.saturating_add(1);
+        if counter == u32::MAX {
+            // 実用上ありえないが、無限ループ回避のため最後の手段
+            return format!("{}-{}", base, uuid::Uuid::new_v4());
+        }
     }
-    // 999 を超えるケースは事実上起こり得ないが、衝突しないよう何かを返す
-    let fallback = format!("{}-{}", base, seen.len());
-    seen.insert(fallback.clone());
-    fallback
 }
 
 fn sanitize_section_key(name: &str) -> String {
@@ -482,5 +484,27 @@ mod tests {
             "second should be [bulb-2]: {}",
             out
         );
+    }
+
+    #[test]
+    fn unique_key_increments_indefinitely() {
+        let mut seen = std::collections::HashSet::new();
+        seen.insert("base".to_string());
+        seen.insert("base-2".to_string());
+        seen.insert("base-3".to_string());
+        let key = unique_key("base", &mut seen);
+        assert_eq!(key, "base-4");
+    }
+
+    #[test]
+    fn unique_key_handles_collision_chain() {
+        // base, base-2, base-3, ... base-1000 全て埋まっている状況
+        let mut seen = std::collections::HashSet::new();
+        seen.insert("base".to_string());
+        for n in 2..=1000 {
+            seen.insert(format!("base-{}", n));
+        }
+        let key = unique_key("base", &mut seen);
+        assert_eq!(key, "base-1001");
     }
 }
