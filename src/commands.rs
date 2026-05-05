@@ -18,6 +18,23 @@ pub fn bump_temperature(current: u32, delta: i32) -> u32 {
     clamp(current as i32 + delta, 2700, 6500) as u32
 }
 
+/// axis から user-facing label を返す。
+fn axis_label(axis: BumpAxis) -> &'static str {
+    use BumpAxis::*;
+    match axis {
+        RPlus => "R+",
+        RMinus => "R-",
+        GPlus => "G+",
+        GMinus => "G-",
+        BPlus => "B+",
+        BMinus => "B-",
+        BrightPlus => "bright+",
+        BrightMinus => "bright-",
+        TempPlus => "temp+",
+        TempMinus => "temp-",
+    }
+}
+
 /// axis から (axis_kind, signed_step) を返す。
 pub fn axis_delta(axis: BumpAxis) -> AxisDelta {
     use BumpAxis::*;
@@ -134,20 +151,20 @@ fn cmd_bump(client: &Client, ctx: &Context, axis: BumpAxis) -> Result<String> {
                 _ => unreachable!(),
             };
             client.set_color(&ctx.device.id, r, g, b)?;
-            Ok(format!("bump {:?} ok ({}:{}:{})", axis, r, g, b))
+            Ok(format!("bump {} ok ({}:{}:{})", axis_label(axis), r, g, b))
         }
         AxisDelta::Brightness(d) => {
             let status = client.get_status(&ctx.device.id)?;
             let new_value = bump_brightness(status.brightness, d);
             client.set_brightness(&ctx.device.id, new_value)?;
-            Ok(format!("bump {:?} ok ({})", axis, new_value))
+            Ok(format!("bump {} ok ({})", axis_label(axis), new_value))
         }
         AxisDelta::Temperature(d) => {
             require_mode(mode, Mode::Temp)?;
             let status = client.get_status(&ctx.device.id)?;
             let new_k = bump_temperature(status.color_temperature, d);
             client.set_color_temperature(&ctx.device.id, new_k)?;
-            Ok(format!("bump {:?} ok ({}K)", axis, new_k))
+            Ok(format!("bump {} ok ({}K)", axis_label(axis), new_k))
         }
     }
 }
@@ -260,6 +277,14 @@ mod tests {
             axis_delta(BumpAxis::TempMinus),
             AxisDelta::Temperature(-100)
         );
+    }
+
+    #[test]
+    fn axis_label_uses_user_facing_labels() {
+        assert_eq!(axis_label(BumpAxis::RPlus), "R+");
+        assert_eq!(axis_label(BumpAxis::RMinus), "R-");
+        assert_eq!(axis_label(BumpAxis::BrightPlus), "bright+");
+        assert_eq!(axis_label(BumpAxis::TempMinus), "temp-");
     }
 
     use crate::config::Mode;

@@ -1,7 +1,7 @@
 use clap::{Parser, Subcommand, ValueEnum};
 
 #[derive(Parser, Debug)]
-#[command(name = "switchbot", about = "SwitchBot Color Bulb CLI")]
+#[command(name = "switchbot", version, about = "SwitchBot Color Bulb CLI")]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Command,
