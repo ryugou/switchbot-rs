@@ -5,7 +5,7 @@ use toml::value::{Table, Value};
 
 use crate::api::{self, parse_color_str, Client};
 use crate::cli::{BumpAxis, Command};
-use crate::config::{self, Context, DefaultDevice, Mode};
+use crate::config::{self, Context, DefaultDevice, DeviceState, Mode};
 
 pub const RGB_STEP: i32 = 16;
 pub const BRIGHT_STEP: i32 = 10;
@@ -86,15 +86,21 @@ pub fn require_mode(actual: Option<Mode>, expected: Mode) -> Result<()> {
     }
 }
 
-/// device が必要なコマンドで ctx.device が None の場合にエラーを返す。
+/// device が必要なコマンドで ctx.device が Configured でない場合にエラーを返す。
 fn require_device(ctx: &Context) -> Result<&DefaultDevice> {
-    ctx.device.as_ref().ok_or_else(|| {
-        anyhow!(
+    match &ctx.device {
+        DeviceState::Configured(d) => Ok(d),
+        DeviceState::Unconfigured => Err(anyhow!(
             "デバイスが未設定です。`switchbot list > ~/.switchbot/devices` を実行し、\
              使うデバイスのセクション名を [default] にしてください \
              (デバイスが 1 台のみなら自動で [default] になります)。"
-        )
-    })
+        )),
+        DeviceState::Malformed(msg) => Err(anyhow!(
+            "~/.switchbot/devices の解析に失敗しました: {}\n\
+             `switchbot list > ~/.switchbot/devices` で再生成できます。",
+            msg
+        )),
+    }
 }
 
 pub fn handle(command: &Command, ctx: &Context) -> Result<String> {

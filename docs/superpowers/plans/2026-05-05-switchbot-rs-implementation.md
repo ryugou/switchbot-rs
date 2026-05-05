@@ -41,6 +41,11 @@ switchbot-rs/
 - `feedback.rs`: 「成功・失敗 → ログ・通知・stderr」のディスパッチを 1 箇所に集約。
 - `main.rs`: 上記をつなぐ。エラー時は exit 1、成功時は exit 0。
 
+> **注**: 当初は `src/main.rs` のみのバイナリクレートとして始め、Task 1 完了後に
+> Rust の慣習である **lib + thin bin** パターンへ移行した (`src/lib.rs` にモジュール
+> 公開を集約、`src/main.rs` は library を呼び出す薄い frontend)。
+> このため Task 2 以降の `cargo test --lib` は `src/lib.rs` 経由でテストを実行する。
+
 ---
 
 ## Task 1: Cargo プロジェクト初期化と依存追加
@@ -53,7 +58,6 @@ switchbot-rs/
 - [ ] **Step 1: cargo init で雛形生成**
 
 ```bash
-cd /Users/ryugo/Developer/src/personal/switchbot-rs
 cargo init --vcs none --name switchbot
 ```
 

@@ -128,21 +128,40 @@ pub fn load_devices(path: &Path) -> Result<Option<DefaultDevice>> {
     Ok(Some(device))
 }
 
+/// devices ファイルの状態を表す。
+/// `Configured`: id が trim 後非空の有効な [default] セクションあり。
+/// `Unconfigured`: ファイル不在 or [default] 不在 or id 空 (初期セットアップ前など)。
+/// `Malformed`: TOML として解析できない (ユーザーが手動編集ミスした場合等)。
+#[derive(Debug)]
+pub enum DeviceState {
+    Configured(DefaultDevice),
+    Unconfigured,
+    Malformed(String),
+}
+
 /// .env 形式テキストを KEY=VALUE のマップにパースする。
-/// 空行と '#' で始まるコメント行は無視する。値の前後空白は trim する。
-/// 値の引用符 (' or ") は剥がさない (op inject の出力もリテラルもそのまま扱える)。
-pub fn parse_env_content(content: &str) -> HashMap<String, String> {
+/// 空行・'#' で始まる行はスキップ、それ以外で `=` が無い行はエラー。
+pub fn parse_env_content(content: &str) -> Result<HashMap<String, String>> {
     let mut map = HashMap::new();
-    for line in content.lines() {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with('#') {
+    for (idx, line) in content.lines().enumerate() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
             continue;
         }
-        if let Some((key, value)) = line.split_once('=') {
-            map.insert(key.trim().to_string(), value.trim().to_string());
+        match trimmed.split_once('=') {
+            Some((key, value)) => {
+                map.insert(key.trim().to_string(), value.trim().to_string());
+            }
+            None => {
+                return Err(anyhow!(
+                    "invalid .env line {} (no '=' separator): {}",
+                    idx + 1,
+                    trimmed
+                ));
+            }
         }
     }
-    map
+    Ok(map)
 }
 
 /// 値のいずれかが op:// で始まれば true。
@@ -167,7 +186,8 @@ pub fn load_credentials(env_path: &Path) -> Result<Credentials> {
             return Err(e).with_context(|| format!("failed to read .env: {}", env_path.display()))
         }
     };
-    let raw_map = parse_env_content(&raw);
+    let raw_map = parse_env_content(&raw)
+        .with_context(|| format!("failed to parse {}", env_path.display()))?;
 
     let resolved = if has_op_reference(&raw_map) {
         resolve_with_op_inject(env_path)?
@@ -220,7 +240,7 @@ fn resolve_with_op_inject(env_path: &Path) -> Result<HashMap<String, String>> {
     }
     let stdout =
         String::from_utf8(output.stdout).context("`op inject` returned non-UTF8 output")?;
-    Ok(parse_env_content(&stdout))
+    parse_env_content(&stdout)
 }
 
 /// .env の permission を検証し、group/other に読み権限があれば自動で 0o600 相当に修正する。
@@ -239,7 +259,7 @@ fn enforce_env_permissions(path: &Path) -> Result<()> {
 #[derive(Debug)]
 pub struct Context {
     pub credentials: Credentials,
-    pub device: Option<DefaultDevice>,
+    pub device: DeviceState,
     pub mode_path: PathBuf,
     pub log_path: PathBuf,
 }
@@ -358,9 +378,13 @@ pub fn load_context_at(home_dir: &Path) -> std::result::Result<Context, LoadCont
     // credentials ロード (op inject 失敗等は Runtime)
     let credentials = load_credentials(&env_path).map_err(LoadContextError::Runtime)?;
 
-    // devices ファイルが存在しても空 id のままなら device = None として list に進ませる
-    // TOML parse error 等の本当のエラーは Runtime として伝播する
-    let device = load_devices(&devices_path).map_err(LoadContextError::Runtime)?;
+    // devices ファイルが存在しても空 id のままなら Unconfigured として list に進ませる
+    // TOML parse error は Malformed として記録するが、全体 fail させない
+    let device = match load_devices(&devices_path) {
+        Ok(Some(d)) => DeviceState::Configured(d),
+        Ok(None) => DeviceState::Unconfigured,
+        Err(e) => DeviceState::Malformed(format!("{:#}", e)),
+    };
 
     Ok(Context {
         credentials,
@@ -497,7 +521,7 @@ id = "abc"
     #[test]
     fn parse_env_basic() {
         let content = "FOO=bar\nBAZ=qux\n";
-        let map = parse_env_content(content);
+        let map = parse_env_content(content).unwrap();
         assert_eq!(map.get("FOO"), Some(&"bar".to_string()));
         assert_eq!(map.get("BAZ"), Some(&"qux".to_string()));
     }
@@ -505,7 +529,7 @@ id = "abc"
     #[test]
     fn parse_env_skips_comments_and_blank() {
         let content = "\n# comment\nFOO=bar\n\n# another\nBAZ=qux\n";
-        let map = parse_env_content(content);
+        let map = parse_env_content(content).unwrap();
         assert_eq!(map.len(), 2);
         assert_eq!(map.get("FOO"), Some(&"bar".to_string()));
     }
@@ -513,18 +537,34 @@ id = "abc"
     #[test]
     fn parse_env_trims_whitespace() {
         let content = "  FOO  =  bar  \n";
-        let map = parse_env_content(content);
+        let map = parse_env_content(content).unwrap();
         assert_eq!(map.get("FOO"), Some(&"bar".to_string()));
     }
 
     #[test]
     fn parse_env_keeps_op_reference_literally() {
         let content = "TOKEN=op://Personal/Item/credential\n";
-        let map = parse_env_content(content);
+        let map = parse_env_content(content).unwrap();
         assert_eq!(
             map.get("TOKEN"),
             Some(&"op://Personal/Item/credential".to_string())
         );
+    }
+
+    #[test]
+    fn parse_env_rejects_malformed_line() {
+        let result = parse_env_content("SWITCHBOT_TOKEN tok\n");
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("line 1"), "msg={}", msg);
+        assert!(msg.contains("no '=' separator"), "msg={}", msg);
+    }
+
+    #[test]
+    fn parse_env_keeps_silent_for_valid_input() {
+        let result = parse_env_content("FOO=bar\n# comment\n\nBAZ=qux\n");
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().len(), 2);
     }
 
     #[test]
@@ -597,7 +637,7 @@ id = "abc"
     }
 
     #[test]
-    fn load_context_with_empty_devices_yields_none_device() {
+    fn load_context_with_empty_devices_yields_unconfigured() {
         let dir = tempdir().unwrap();
         let cfg_dir = dir.path().join(".switchbot");
         fs::create_dir_all(&cfg_dir).unwrap();
@@ -609,23 +649,23 @@ id = "abc"
         .unwrap();
 
         let ctx = load_context_at(dir.path()).unwrap();
-        assert!(ctx.device.is_none());
+        assert!(matches!(ctx.device, DeviceState::Unconfigured));
     }
 
     #[test]
-    fn load_context_with_missing_devices_yields_none_device() {
+    fn load_context_with_missing_devices_yields_unconfigured() {
         let dir = tempdir().unwrap();
         let cfg_dir = dir.path().join(".switchbot");
         fs::create_dir_all(&cfg_dir).unwrap();
         make_valid_env(&cfg_dir);
-        // devices ファイルなし → テンプレが作られ device = None
+        // devices ファイルなし → テンプレが作られ Unconfigured
 
         let ctx = load_context_at(dir.path()).unwrap();
-        assert!(ctx.device.is_none());
+        assert!(matches!(ctx.device, DeviceState::Unconfigured));
     }
 
     #[test]
-    fn load_context_with_valid_devices_yields_some_device() {
+    fn load_context_with_valid_devices_yields_configured() {
         let dir = tempdir().unwrap();
         let cfg_dir = dir.path().join(".switchbot");
         fs::create_dir_all(&cfg_dir).unwrap();
@@ -637,12 +677,14 @@ id = "abc"
         .unwrap();
 
         let ctx = load_context_at(dir.path()).unwrap();
-        assert!(ctx.device.is_some());
-        assert_eq!(ctx.device.unwrap().id, "abc-123");
+        match ctx.device {
+            DeviceState::Configured(d) => assert_eq!(d.id, "abc-123"),
+            _ => panic!("expected Configured"),
+        }
     }
 
     #[test]
-    fn load_context_with_malformed_devices_errors_as_runtime() {
+    fn load_context_with_malformed_devices_yields_malformed() {
         let dir = tempdir().unwrap();
         let cfg_dir = dir.path().join(".switchbot");
         fs::create_dir_all(&cfg_dir).unwrap();
@@ -656,11 +698,11 @@ id = "abc"
         // devices は壊れた TOML
         fs::write(cfg_dir.join("devices"), "malformed === not toml ===").unwrap();
 
-        let result = load_context_at(dir.path());
-        assert!(result.is_err(), "expected Err for malformed devices");
+        // malformed devices は全体 fail しない (Err ではなく Ok with Malformed)
+        let ctx = load_context_at(dir.path()).unwrap();
         assert!(
-            result.unwrap_err().should_notify(),
-            "malformed TOML should be Runtime (notify)"
+            matches!(ctx.device, DeviceState::Malformed(_)),
+            "expected Malformed"
         );
     }
 

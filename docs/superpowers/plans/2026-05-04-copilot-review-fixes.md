@@ -103,14 +103,14 @@ fn run() -> Result<(), ()> {
 - [ ] **Step 3: ビルド確認**
 
 ```bash
-cd /Users/ryugo/Developer/src/personal/switchbot-rs/.worktrees/v2-impl && cargo build 2>&1
+cargo build 2>&1
 # Expected: Compiling switchbot ... Finished
 ```
 
 - [ ] **Step 4: テスト確認 (件数維持)**
 
 ```bash
-cd /Users/ryugo/Developer/src/personal/switchbot-rs/.worktrees/v2-impl && cargo test --lib 2>&1 | tail -5
+cargo test --lib 2>&1 | tail -5
 # Expected: test result: ok. 84 passed
 ```
 
@@ -162,7 +162,7 @@ cd /Users/ryugo/Developer/src/personal/switchbot-rs/.worktrees/v2-impl && cargo 
 - [ ] **Step 2: テストが失敗することを確認 (関数がまだない)**
 
 ```bash
-cd /Users/ryugo/Developer/src/personal/switchbot-rs/.worktrees/v2-impl && cargo test --lib api 2>&1 | tail -10
+cargo test --lib api 2>&1 | tail -10
 # Expected: error[E0425]: cannot find function `parse_response_inner`
 ```
 
@@ -286,7 +286,7 @@ fn parse_response_inner<T: serde::de::DeserializeOwned>(
 - [ ] **Step 4: テストが通ることを確認**
 
 ```bash
-cd /Users/ryugo/Developer/src/personal/switchbot-rs/.worktrees/v2-impl && cargo test --lib api 2>&1 | tail -15
+cargo test --lib api 2>&1 | tail -15
 # Expected: test result: ok. N passed; 0 failed
 # parse_response_inner_* 3 テストが全て ok
 ```
@@ -294,7 +294,7 @@ cd /Users/ryugo/Developer/src/personal/switchbot-rs/.worktrees/v2-impl && cargo 
 - [ ] **Step 5: fmt/clippy 確認**
 
 ```bash
-cd /Users/ryugo/Developer/src/personal/switchbot-rs/.worktrees/v2-impl && cargo fmt --all -- --check && cargo clippy --all-targets -- -D warnings 2>&1 | tail -10
+cargo fmt --all -- --check && cargo clippy --all-targets -- -D warnings 2>&1 | tail -10
 # Expected: no errors
 ```
 
@@ -340,7 +340,7 @@ cd /Users/ryugo/Developer/src/personal/switchbot-rs/.worktrees/v2-impl && cargo 
 - [ ] **Step 2: テストが失敗することを確認**
 
 ```bash
-cd /Users/ryugo/Developer/src/personal/switchbot-rs/.worktrees/v2-impl && cargo test --lib config::tests::load_devices_whitespace 2>&1 | tail -10
+cargo test --lib config::tests::load_devices_whitespace 2>&1 | tail -10
 # Expected: FAILED (whitespace_only は None を返さず Some を返す)
 ```
 
@@ -376,7 +376,7 @@ cd /Users/ryugo/Developer/src/personal/switchbot-rs/.worktrees/v2-impl && cargo 
 - [ ] **Step 4: テストが通ることを確認**
 
 ```bash
-cd /Users/ryugo/Developer/src/personal/switchbot-rs/.worktrees/v2-impl && cargo test --lib config 2>&1 | tail -10
+cargo test --lib config 2>&1 | tail -10
 # Expected: test result: ok. N passed (load_devices_whitespace_only_id_returns_none と load_devices_id_is_trimmed が ok)
 ```
 
@@ -439,28 +439,28 @@ switchbot bright <1-100|max>      # 例: switchbot bright 50, switchbot bright m
 - [ ] **Step 1: `cargo test --lib`**
 
 ```bash
-cd /Users/ryugo/Developer/src/personal/switchbot-rs/.worktrees/v2-impl && cargo test --lib 2>&1 | tail -5
+cargo test --lib 2>&1 | tail -5
 # Expected: test result: ok. 90 passed (84 + 5 new = 89 以上)
 ```
 
 - [ ] **Step 2: `cargo fmt --all -- --check`**
 
 ```bash
-cd /Users/ryugo/Developer/src/personal/switchbot-rs/.worktrees/v2-impl && cargo fmt --all -- --check 2>&1
+cargo fmt --all -- --check 2>&1
 # Expected: (no output = clean)
 ```
 
 - [ ] **Step 3: `cargo clippy --all-targets -- -D warnings`**
 
 ```bash
-cd /Users/ryugo/Developer/src/personal/switchbot-rs/.worktrees/v2-impl && cargo clippy --all-targets -- -D warnings 2>&1 | tail -10
+cargo clippy --all-targets -- -D warnings 2>&1 | tail -10
 # Expected: warning: ... 0 errors
 ```
 
 - [ ] **Step 4: `cargo build --release`**
 
 ```bash
-cd /Users/ryugo/Developer/src/personal/switchbot-rs/.worktrees/v2-impl && cargo build --release 2>&1 | tail -5
+cargo build --release 2>&1 | tail -5
 # Expected: Finished release [optimized] target(s)
 ```
 
