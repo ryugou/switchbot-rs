@@ -9,6 +9,33 @@ use anyhow::Context as AnyhowContext;
 use anyhow::{anyhow, Result};
 use serde::Deserialize;
 
+/// `load_context()` の失敗種別。setup 系は stderr のみ、runtime 系は notify + log まで流す。
+#[derive(Debug)]
+pub enum LoadContextError {
+    /// 初回 bootstrap (テンプレ書き出し直後) や HOME 不在など、ユーザーが対話的にセットアップ中の状態。
+    /// stderr のみで通知・ログには載せない。
+    Setup(anyhow::Error),
+    /// 1Password 解決失敗、credentials 取得失敗など、ユーザー外部要因の runtime エラー。
+    /// stderr + 通知 + ログに流す。
+    Runtime(anyhow::Error),
+}
+
+impl LoadContextError {
+    pub fn should_notify(&self) -> bool {
+        matches!(self, Self::Runtime(_))
+    }
+}
+
+impl std::fmt::Display for LoadContextError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Setup(e) | Self::Runtime(e) => write!(f, "{}", e),
+        }
+    }
+}
+
+impl std::error::Error for LoadContextError {}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
     Rgb,
@@ -244,16 +271,20 @@ pub fn config_dir() -> Result<PathBuf> {
 /// 必要なディレクトリ・テンプレートを用意し、Context を組み立てる。
 /// `.env` がなければテンプレを書き出して編集を促すエラーで返す。
 /// `devices` がない・空 id の場合は `device = None` として list に進ませる。
-pub fn load_context() -> Result<Context> {
+pub fn load_context() -> std::result::Result<Context, LoadContextError> {
     let base = directories::BaseDirs::new()
-        .ok_or_else(|| anyhow!("ホームディレクトリを特定できません"))?;
+        .ok_or_else(|| LoadContextError::Setup(anyhow!("ホームディレクトリを特定できません")))?;
     load_context_at(base.home_dir())
 }
 
 /// load_context の内部実装。home_dir を受け取るため、テストで差し替え可能。
-pub fn load_context_at(home_dir: &Path) -> Result<Context> {
+pub fn load_context_at(home_dir: &Path) -> std::result::Result<Context, LoadContextError> {
     let dir = home_dir.join(".switchbot");
-    fs::create_dir_all(&dir).with_context(|| format!("failed to create {}", dir.display()))?;
+    fs::create_dir_all(&dir).map_err(|e| {
+        LoadContextError::Setup(
+            anyhow::Error::new(e).context(format!("failed to create {}", dir.display())),
+        )
+    })?;
 
     let env_path = dir.join(".env");
     let devices_path = dir.join("devices");
@@ -267,15 +298,25 @@ pub fn load_context_at(home_dir: &Path) -> Result<Context> {
         .open(&env_path)
     {
         Ok(mut f) => {
-            f.write_all(ENV_TEMPLATE.as_bytes())
-                .with_context(|| format!("failed to write template: {}", env_path.display()))?;
-            fs::set_permissions(&env_path, fs::Permissions::from_mode(0o600))
-                .with_context(|| format!("failed to chmod 600: {}", env_path.display()))?;
+            f.write_all(ENV_TEMPLATE.as_bytes()).map_err(|e| {
+                LoadContextError::Setup(
+                    anyhow::Error::new(e)
+                        .context(format!("failed to write template: {}", env_path.display())),
+                )
+            })?;
+            fs::set_permissions(&env_path, fs::Permissions::from_mode(0o600)).map_err(|e| {
+                LoadContextError::Setup(
+                    anyhow::Error::new(e)
+                        .context(format!("failed to chmod 600: {}", env_path.display())),
+                )
+            })?;
             true
         }
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => false,
         Err(e) => {
-            return Err(e).with_context(|| format!("failed to create {}", env_path.display()));
+            return Err(LoadContextError::Setup(
+                anyhow::Error::new(e).context(format!("failed to create {}", env_path.display())),
+            ));
         }
     };
 
@@ -286,29 +327,40 @@ pub fn load_context_at(home_dir: &Path) -> Result<Context> {
         .open(&devices_path)
     {
         Ok(mut f) => {
-            f.write_all(DEVICES_TEMPLATE.as_bytes())
-                .with_context(|| format!("failed to write template: {}", devices_path.display()))?;
+            f.write_all(DEVICES_TEMPLATE.as_bytes()).map_err(|e| {
+                LoadContextError::Setup(anyhow::Error::new(e).context(format!(
+                    "failed to write template: {}",
+                    devices_path.display()
+                )))
+            })?;
             true
         }
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => false,
         Err(e) => {
-            return Err(e).with_context(|| format!("failed to create {}", devices_path.display()));
+            return Err(LoadContextError::Setup(
+                anyhow::Error::new(e)
+                    .context(format!("failed to create {}", devices_path.display())),
+            ));
         }
     };
 
-    // .env が新規作成された場合は編集を促して exit。これは必須。
+    // .env が新規作成された場合は編集を促して exit。これは Setup。
     if env_created {
-        return Err(anyhow!("{} を編集してください", env_path.display()));
+        return Err(LoadContextError::Setup(anyhow!(
+            "{} を編集してください",
+            env_path.display()
+        )));
     }
 
-    // .env の権限を検証し、必要なら 0o600 に自動修正
-    enforce_env_permissions(&env_path)?;
+    // .env の権限を検証し、必要なら 0o600 に自動修正 (既存ファイルへの操作なので Runtime)
+    enforce_env_permissions(&env_path).map_err(LoadContextError::Runtime)?;
 
-    let credentials = load_credentials(&env_path)?;
+    // credentials ロード (op inject 失敗等は Runtime)
+    let credentials = load_credentials(&env_path).map_err(LoadContextError::Runtime)?;
 
     // devices ファイルが存在しても空 id のままなら device = None として list に進ませる
-    // TOML parse error 等の本当のエラーは ? で伝播する
-    let device = load_devices(&devices_path)?;
+    // TOML parse error 等の本当のエラーは Runtime として伝播する
+    let device = load_devices(&devices_path).map_err(LoadContextError::Runtime)?;
 
     Ok(Context {
         credentials,
@@ -590,7 +642,7 @@ id = "abc"
     }
 
     #[test]
-    fn load_context_with_malformed_devices_errors() {
+    fn load_context_with_malformed_devices_errors_as_runtime() {
         let dir = tempdir().unwrap();
         let cfg_dir = dir.path().join(".switchbot");
         fs::create_dir_all(&cfg_dir).unwrap();
@@ -605,10 +657,10 @@ id = "abc"
         fs::write(cfg_dir.join("devices"), "malformed === not toml ===").unwrap();
 
         let result = load_context_at(dir.path());
+        assert!(result.is_err(), "expected Err for malformed devices");
         assert!(
-            result.is_err(),
-            "expected Err for malformed devices, got {:?}",
-            result.is_ok()
+            result.unwrap_err().should_notify(),
+            "malformed TOML should be Runtime (notify)"
         );
     }
 
@@ -618,6 +670,19 @@ id = "abc"
         let dir = tempdir().unwrap();
         let err = load_context_at(dir.path()).unwrap_err();
         assert!(err.to_string().contains("編集してください"));
+    }
+
+    #[test]
+    fn load_context_first_run_is_setup_error() {
+        // ファイル何もない状態 → bootstrap で .env テンプレが書き出される (Setup)
+        let dir = tempdir().unwrap();
+        let result = load_context_at(dir.path());
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            !err.should_notify(),
+            "first-run bootstrap should be Setup (no notify)"
+        );
     }
 
     // --- 修正 2 テスト: enforce_env_permissions ---

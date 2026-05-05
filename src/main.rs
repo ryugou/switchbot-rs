@@ -41,11 +41,19 @@ fn run() -> Result<(), ()> {
         }
     };
 
-    // 3) Context をロード。失敗 (HOME 不在、初回 bootstrap、op inject 失敗等) は stderr のみ。
+    // 3) Context をロード。Setup 失敗は stderr のみ、Runtime 失敗は stderr + log + notify。
     let ctx = match config::load_context() {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("{}", e);
+            let msg = e.to_string();
+            if e.should_notify() {
+                // Runtime エラー: stderr + log + notify
+                if let Some(ref lp) = log_path {
+                    feedback::log_error(lp, &msg);
+                }
+                feedback::notify(&msg);
+            }
+            eprintln!("{}", msg);
             return Err(());
         }
     };

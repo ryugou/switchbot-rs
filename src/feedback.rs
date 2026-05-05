@@ -41,7 +41,10 @@ pub fn notify(msg: &str) {
 }
 
 fn escape_for_applescript(s: &str) -> String {
-    s.replace('\\', "\\\\").replace('"', "\\\"")
+    s.replace('\\', "\\\\") // バックスラッシュを最初に
+        .replace('"', "\\\"") // 次に引用符
+        .replace('\r', "") // CR は除去
+        .replace('\n', " ") // LF は空白に
 }
 
 #[cfg(test)]
@@ -91,5 +94,26 @@ mod tests {
     fn applescript_escape_doubles_backslash_and_quote() {
         assert_eq!(escape_for_applescript(r#"a"b\c"#), r#"a\"b\\c"#);
         assert_eq!(escape_for_applescript("plain"), "plain");
+    }
+
+    #[test]
+    fn applescript_escape_replaces_newlines_with_space() {
+        assert_eq!(escape_for_applescript("line1\nline2"), "line1 line2");
+        assert_eq!(escape_for_applescript("a\nb\nc"), "a b c");
+    }
+
+    #[test]
+    fn applescript_escape_strips_carriage_returns() {
+        assert_eq!(escape_for_applescript("line1\r\nline2"), "line1 line2");
+        assert_eq!(escape_for_applescript("a\rb"), "ab");
+    }
+
+    #[test]
+    fn applescript_escape_handles_combined() {
+        // バックスラッシュ・引用符・改行が混在
+        assert_eq!(
+            escape_for_applescript("error: \"bad\" input\nusage: ..."),
+            r#"error: \"bad\" input usage: ..."#
+        );
     }
 }
