@@ -86,8 +86,8 @@ fn check_status<T>(resp: &ApiResponse<T>) -> Result<()> {
 }
 
 pub struct Client {
-    pub token: String,
-    pub secret: String,
+    token: String,
+    secret: String,
     http: reqwest::blocking::Client,
 }
 

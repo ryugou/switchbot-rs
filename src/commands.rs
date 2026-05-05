@@ -1,3 +1,9 @@
+use anyhow::{anyhow, Result};
+
+use crate::api::{self, parse_color_str, Client};
+use crate::cli::{BumpAxis, Command};
+use crate::config::{self, Context, Mode};
+
 pub const RGB_STEP: i32 = 16;
 pub const BRIGHT_STEP: i32 = 10;
 pub const TEMP_STEP: i32 = 100;
@@ -54,12 +60,6 @@ pub enum AxisDelta {
     Brightness(i32),
     Temperature(i32),
 }
-
-use anyhow::{anyhow, Result};
-
-use crate::api::{self, parse_color_str, Client};
-use crate::cli::{BumpAxis, Command};
-use crate::config::{self, Context, Mode};
 
 /// 期待モードと実際モードを照合し、ズレていればエラーを返す。
 pub fn require_mode(actual: Option<Mode>, expected: Mode) -> Result<()> {
@@ -272,8 +272,6 @@ mod tests {
         assert_eq!(axis_label(BumpAxis::BrightPlus), "bright+");
         assert_eq!(axis_label(BumpAxis::TempMinus), "temp-");
     }
-
-    use crate::config::Mode;
 
     #[test]
     fn require_mode_matches() {

@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 use std::fs;
-use std::path::Path;
+use std::io::Write as _;
+use std::os::unix::fs::PermissionsExt;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::Context as AnyhowContext;
@@ -183,10 +185,6 @@ fn resolve_with_op_inject(env_path: &Path) -> Result<HashMap<String, String>> {
         String::from_utf8(output.stdout).context("`op inject` returned non-UTF8 output")?;
     Ok(parse_env_content(&stdout))
 }
-
-use std::io::Write as _;
-use std::os::unix::fs::PermissionsExt;
-use std::path::PathBuf;
 
 #[derive(Debug)]
 pub struct Context {
