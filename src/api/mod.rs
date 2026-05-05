@@ -203,45 +203,43 @@ impl Client {
 /// HTTP レスポンスのテキストと status から `ApiResponse<T>` をパースする pure 関数。
 /// テストで直接呼び出し可能。
 ///
+/// - HTTP non-2xx → 無条件で Err (body が API JSON 形式なら message を付加)
 /// - HTTP success かつ JSON パース成功 → Ok
-/// - HTTP error かつ JSON パース成功 → API の message を含むエラー
-/// - HTTP error かつ JSON パース失敗 → raw body の先頭 200 文字を含むエラー
 /// - HTTP success かつ JSON パース失敗 → デコードエラー
 fn parse_response_inner<T: serde::de::DeserializeOwned>(
     body_text: &str,
     status: reqwest::StatusCode,
     op: &str,
 ) -> Result<ApiResponse<T>> {
-    match serde_json::from_str::<ApiResponse<T>>(body_text) {
-        Ok(api) => {
-            if !status.is_success() && api.status_code != 100 {
-                return Err(anyhow::anyhow!(
-                    "{} HTTP {}: {} (statusCode={})",
-                    op,
-                    status.as_u16(),
-                    api.message,
-                    api.status_code
-                ));
+    if !status.is_success() {
+        // HTTP error は無条件でエラー扱い。
+        // body が SwitchBot API の JSON 形式なら message を抽出して付加情報にする。
+        let detail = match serde_json::from_str::<ApiResponse<serde_json::Value>>(body_text) {
+            Ok(api) => format!("{} (statusCode={})", api.message, api.status_code),
+            Err(_) => {
+                let snippet = body_text
+                    .lines()
+                    .next()
+                    .unwrap_or("")
+                    .chars()
+                    .take(200)
+                    .collect::<String>();
+                if snippet.is_empty() {
+                    "(empty body)".to_string()
+                } else {
+                    snippet
+                }
             }
-            Ok(api)
-        }
-        Err(_) if !status.is_success() => {
-            let snippet = body_text
-                .lines()
-                .next()
-                .unwrap_or("")
-                .chars()
-                .take(200)
-                .collect::<String>();
-            Err(anyhow::anyhow!(
-                "{} HTTP {}: {}",
-                op,
-                status.as_u16(),
-                snippet
-            ))
-        }
-        Err(e) => Err(anyhow::anyhow!("failed to decode {} JSON: {}", op, e)),
+        };
+        return Err(anyhow::anyhow!(
+            "{} HTTP {}: {}",
+            op,
+            status.as_u16(),
+            detail
+        ));
     }
+    serde_json::from_str::<ApiResponse<T>>(body_text)
+        .with_context(|| format!("failed to decode {} JSON", op))
 }
 
 #[cfg(test)]
@@ -380,5 +378,21 @@ mod tests {
             parse_response_inner(body, reqwest::StatusCode::OK, "list_devices");
         assert!(result.is_ok());
         assert_eq!(result.unwrap().status_code, 100);
+    }
+
+    #[test]
+    fn parse_response_inner_treats_http_error_as_err_even_when_status_code_100() {
+        let body = r#"{"statusCode": 100, "message": "ok", "body": null}"#;
+        let result: Result<ApiResponse<DeviceList>> = parse_response_inner(
+            body,
+            reqwest::StatusCode::INTERNAL_SERVER_ERROR,
+            "list_devices",
+        );
+        assert!(
+            result.is_err(),
+            "HTTP 5xx must be Err regardless of payload statusCode"
+        );
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("HTTP 500"), "msg={}", msg);
     }
 }
