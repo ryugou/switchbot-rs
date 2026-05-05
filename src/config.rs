@@ -589,6 +589,29 @@ id = "abc"
     }
 
     #[test]
+    fn load_context_with_malformed_devices_errors() {
+        let dir = tempdir().unwrap();
+        let cfg_dir = dir.path().join(".switchbot");
+        fs::create_dir_all(&cfg_dir).unwrap();
+        // .env は正常 (op:// なしの平文)
+        fs::write(
+            cfg_dir.join(".env"),
+            "SWITCHBOT_TOKEN=tok\nSWITCHBOT_SECRET=sec\n",
+        )
+        .unwrap();
+        fs::set_permissions(cfg_dir.join(".env"), fs::Permissions::from_mode(0o600)).unwrap();
+        // devices は壊れた TOML
+        fs::write(cfg_dir.join("devices"), "malformed === not toml ===").unwrap();
+
+        let result = load_context_at(dir.path());
+        assert!(
+            result.is_err(),
+            "expected Err for malformed devices, got {:?}",
+            result.is_ok()
+        );
+    }
+
+    #[test]
     fn load_context_new_env_requires_edit() {
         // .env が存在しない場合は "編集してください" エラーが返る
         let dir = tempdir().unwrap();
