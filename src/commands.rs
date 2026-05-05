@@ -2,23 +2,18 @@ pub const RGB_STEP: i32 = 16;
 pub const BRIGHT_STEP: i32 = 10;
 pub const TEMP_STEP: i32 = 100;
 
-pub fn clamp(value: i32, min: i32, max: i32) -> i32 {
-    value.max(min).min(max)
-}
-
 pub fn bump_rgb_channel(current: u8, delta: i32) -> u8 {
-    clamp(current as i32 + delta, 0, 255) as u8
+    (current as i32 + delta).clamp(0, 255) as u8
 }
 
 pub fn bump_brightness(current: u32, delta: i32) -> u32 {
-    clamp(current as i32 + delta, 1, 100) as u32
+    (current as i32 + delta).clamp(1, 100) as u32
 }
 
 pub fn bump_temperature(current: u32, delta: i32) -> u32 {
-    clamp(current as i32 + delta, 2700, 6500) as u32
+    (current as i32 + delta).clamp(2700, 6500) as u32
 }
 
-/// axis から user-facing label を返す。
 fn axis_label(axis: BumpAxis) -> &'static str {
     use BumpAxis::*;
     match axis {
@@ -35,7 +30,6 @@ fn axis_label(axis: BumpAxis) -> &'static str {
     }
 }
 
-/// axis から (axis_kind, signed_step) を返す。
 pub fn axis_delta(axis: BumpAxis) -> AxisDelta {
     use BumpAxis::*;
     match axis {
@@ -75,9 +69,10 @@ pub fn require_mode(actual: Option<Mode>, expected: Mode) -> Result<()> {
         )),
         Some(m) if m == expected => Ok(()),
         Some(_) => {
+            let bin = env!("CARGO_PKG_NAME");
             let (current_label, switch_cmd) = match expected {
-                Mode::Rgb => ("温度モード", "switchbot color <hex>"),
-                Mode::Temp => ("RGB モード", "switchbot temp <K>"),
+                Mode::Rgb => ("温度モード", format!("{bin} color <hex>")),
+                Mode::Temp => ("RGB モード", format!("{bin} temp <K>")),
             };
             Err(anyhow!(
                 "現在 {}です。{} を先に実行してください。",
@@ -148,7 +143,7 @@ fn cmd_bump(client: &Client, ctx: &Context, axis: BumpAxis) -> Result<String> {
                 AxisDelta::Red(_) => (bump_rgb_channel(r0, d), g0, b0),
                 AxisDelta::Green(_) => (r0, bump_rgb_channel(g0, d), b0),
                 AxisDelta::Blue(_) => (r0, g0, bump_rgb_channel(b0, d)),
-                _ => unreachable!(),
+                _ => unreachable!("outer match arm guarantees Red|Green|Blue"),
             };
             client.set_color(&ctx.device.id, r, g, b)?;
             Ok(format!("bump {} ok ({}:{}:{})", axis_label(axis), r, g, b))
@@ -172,57 +167,48 @@ fn cmd_bump(client: &Client, ctx: &Context, axis: BumpAxis) -> Result<String> {
 /// list 出力用に Device 配列を TOML 形式に整形する。
 /// 1 台なら [default]、複数なら deviceName を kebab-case 化したセクション名にする。
 pub fn format_devices_toml(devices: &[api::Device]) -> String {
+    let single = devices.len() == 1;
     let mut out = String::new();
-    if devices.len() == 1 {
-        let d = &devices[0];
-        out.push_str("[default]\n");
+    for (i, d) in devices.iter().enumerate() {
+        if i > 0 {
+            out.push('\n');
+        }
+        let section = if single {
+            "default".to_string()
+        } else {
+            sanitize_section_key(&d.name)
+        };
+        out.push_str(&format!("[{}]\n", section));
         out.push_str(&format!("id = \"{}\"\n", d.id));
         out.push_str(&format!("type = \"{}\"\n", d.kind));
         out.push_str(&format!("name = \"{}\"\n", d.name));
-    } else {
-        for (i, d) in devices.iter().enumerate() {
-            if i > 0 {
-                out.push('\n');
-            }
-            let key = sanitize_section_key(&d.name);
-            out.push_str(&format!("[{}]\n", key));
-            out.push_str(&format!("id = \"{}\"\n", d.id));
-            out.push_str(&format!("type = \"{}\"\n", d.kind));
-            out.push_str(&format!("name = \"{}\"\n", d.name));
-        }
     }
     out
 }
 
 fn sanitize_section_key(name: &str) -> String {
-    let lowered = name.to_lowercase();
-    let mut key: String = lowered
-        .chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
-        .collect();
-    while key.contains("--") {
-        key = key.replace("--", "-");
+    let mut out = String::with_capacity(name.len());
+    let mut prev_dash = true; // 先頭のハイフンを除去するため true で始める
+    for c in name.chars() {
+        if c.is_ascii_alphanumeric() {
+            out.push(c.to_ascii_lowercase());
+            prev_dash = false;
+        } else if !prev_dash {
+            out.push('-');
+            prev_dash = true;
+        }
     }
-    let trimmed = key.trim_matches('-').to_string();
+    let trimmed = out.trim_end_matches('-');
     if trimmed.is_empty() {
         "device".to_string()
     } else {
-        trimmed
+        trimmed.to_string()
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn clamp_basic() {
-        assert_eq!(clamp(50, 0, 100), 50);
-        assert_eq!(clamp(-5, 0, 100), 0);
-        assert_eq!(clamp(150, 0, 100), 100);
-        assert_eq!(clamp(0, 0, 100), 0);
-        assert_eq!(clamp(100, 0, 100), 100);
-    }
 
     #[test]
     fn bump_rgb_within_range() {

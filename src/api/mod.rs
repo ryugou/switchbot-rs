@@ -31,9 +31,16 @@ pub struct Device {
     pub kind: String,
 }
 
+#[derive(Deserialize, Debug, PartialEq, Eq, Clone, Copy)]
+#[serde(rename_all = "lowercase")]
+pub enum Power {
+    On,
+    Off,
+}
+
 #[derive(Deserialize, Debug)]
 pub struct BulbStatus {
-    pub power: String,
+    pub power: Power,
     pub brightness: u32,
     pub color: String,
     #[serde(rename = "colorTemperature")]
@@ -42,17 +49,25 @@ pub struct BulbStatus {
 
 /// "R:G:B" 形式の文字列を分解する。
 pub fn parse_color_str(s: &str) -> anyhow::Result<(u8, u8, u8)> {
-    let parts: Vec<&str> = s.split(':').collect();
-    if parts.len() != 3 {
+    let mut parts = s.splitn(4, ':');
+    let r_str = parts.next();
+    let g_str = parts.next();
+    let b_str = parts.next();
+    let extra = parts.next();
+
+    if extra.is_some() || b_str.is_none() {
         anyhow::bail!("invalid color string '{}': expected 'R:G:B'", s);
     }
-    let r: u8 = parts[0]
+    let r: u8 = r_str
+        .unwrap()
         .parse()
         .map_err(|_| anyhow::anyhow!("invalid R in '{}'", s))?;
-    let g: u8 = parts[1]
+    let g: u8 = g_str
+        .unwrap()
         .parse()
         .map_err(|_| anyhow::anyhow!("invalid G in '{}'", s))?;
-    let b: u8 = parts[2]
+    let b: u8 = b_str
+        .unwrap()
         .parse()
         .map_err(|_| anyhow::anyhow!("invalid B in '{}'", s))?;
     Ok((r, g, b))
@@ -224,7 +239,7 @@ mod tests {
         }"#;
         let parsed: ApiResponse<BulbStatus> = serde_json::from_str(json).unwrap();
         let body = parsed.body.unwrap();
-        assert_eq!(body.power, "on");
+        assert_eq!(body.power, Power::On);
         assert_eq!(body.brightness, 50);
         assert_eq!(body.color, "255:128:0");
         assert_eq!(body.color_temperature, 0);

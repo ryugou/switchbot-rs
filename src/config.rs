@@ -20,11 +20,13 @@ struct ModeFile {
 
 /// モードファイルを読み込む。ファイルが存在しなければ Ok(None)。
 pub fn read_mode(path: &Path) -> Result<Option<Mode>> {
-    if !path.exists() {
-        return Ok(None);
-    }
-    let content = fs::read_to_string(path)
-        .with_context(|| format!("failed to read mode file: {}", path.display()))?;
+    let content = match fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => {
+            return Err(e).with_context(|| format!("failed to read mode file: {}", path.display()))
+        }
+    };
     let parsed: ModeFile = toml::from_str(&content)
         .map_err(|e| anyhow!("failed to parse mode file {}: {}", path.display(), e))?;
     match parsed.mode.as_str() {
@@ -66,11 +68,16 @@ struct DevicesFile {
 /// devices ファイルを読み、[default] セクションを返す。
 /// 存在しないか [default] が無いか id が空ならエラー。
 pub fn load_devices(path: &Path) -> Result<DefaultDevice> {
-    if !path.exists() {
-        return Err(anyhow!("devices file not found: {}", path.display()));
-    }
-    let content = fs::read_to_string(path)
-        .with_context(|| format!("failed to read devices file: {}", path.display()))?;
+    let content = match fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Err(anyhow!("devices file not found: {}", path.display()));
+        }
+        Err(e) => {
+            return Err(e)
+                .with_context(|| format!("failed to read devices file: {}", path.display()))
+        }
+    };
     let parsed: DevicesFile = toml::from_str(&content)
         .with_context(|| format!("failed to parse devices file: {}", path.display()))?;
     let device = parsed
@@ -112,11 +119,15 @@ pub struct Credentials {
 
 /// .env を読み、必要なら op inject で解決し、SWITCHBOT_TOKEN / SWITCHBOT_SECRET を返す。
 pub fn load_credentials(env_path: &Path) -> Result<Credentials> {
-    if !env_path.exists() {
-        return Err(anyhow!(".env file not found: {}", env_path.display()));
-    }
-    let raw = fs::read_to_string(env_path)
-        .with_context(|| format!("failed to read .env: {}", env_path.display()))?;
+    let raw = match fs::read_to_string(env_path) {
+        Ok(s) => s,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Err(anyhow!(".env file not found: {}", env_path.display()));
+        }
+        Err(e) => {
+            return Err(e).with_context(|| format!("failed to read .env: {}", env_path.display()))
+        }
+    };
     let raw_map = parse_env_content(&raw);
 
     let resolved = if has_op_reference(&raw_map) {
@@ -173,6 +184,7 @@ fn resolve_with_op_inject(env_path: &Path) -> Result<HashMap<String, String>> {
     Ok(parse_env_content(&stdout))
 }
 
+use std::io::Write as _;
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 
@@ -221,17 +233,43 @@ pub fn load_context() -> Result<Context> {
 
     let mut needs_setup = Vec::new();
 
-    if !env_path.exists() {
-        fs::write(&env_path, ENV_TEMPLATE)
-            .with_context(|| format!("failed to write template: {}", env_path.display()))?;
-        fs::set_permissions(&env_path, fs::Permissions::from_mode(0o600))
-            .with_context(|| format!("failed to chmod 600: {}", env_path.display()))?;
+    let env_created = match std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&env_path)
+    {
+        Ok(mut f) => {
+            f.write_all(ENV_TEMPLATE.as_bytes())
+                .with_context(|| format!("failed to write template: {}", env_path.display()))?;
+            fs::set_permissions(&env_path, fs::Permissions::from_mode(0o600))
+                .with_context(|| format!("failed to chmod 600: {}", env_path.display()))?;
+            true
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => false,
+        Err(e) => {
+            return Err(e).with_context(|| format!("failed to create {}", env_path.display()));
+        }
+    };
+    if env_created {
         needs_setup.push(format!("{} を編集してください", env_path.display()));
     }
 
-    if !devices_path.exists() {
-        fs::write(&devices_path, DEVICES_TEMPLATE)
-            .with_context(|| format!("failed to write template: {}", devices_path.display()))?;
+    let devices_created = match std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&devices_path)
+    {
+        Ok(mut f) => {
+            f.write_all(DEVICES_TEMPLATE.as_bytes())
+                .with_context(|| format!("failed to write template: {}", devices_path.display()))?;
+            true
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => false,
+        Err(e) => {
+            return Err(e).with_context(|| format!("failed to create {}", devices_path.display()));
+        }
+    };
+    if devices_created {
         needs_setup.push(format!(
             "{} を編集してください (switchbot list で deviceId を確認)",
             devices_path.display()

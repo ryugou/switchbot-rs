@@ -54,18 +54,16 @@ pub enum BumpAxis {
 }
 
 fn parse_hex(s: &str) -> Result<(u8, u8, u8), String> {
-    if s.len() != 6 {
+    if s.len() != 6 || !s.is_ascii() {
         return Err(format!(
-            "hex は 6 桁である必要があります (got {} 桁)",
-            s.len()
+            "hex は 6 桁の ASCII 16 進数である必要があります (got '{}')",
+            s
         ));
     }
-    if !s.chars().all(|c| c.is_ascii_hexdigit()) {
-        return Err(format!("hex は 16 進数である必要があります (got '{}')", s));
-    }
-    let r = u8::from_str_radix(&s[0..2], 16).map_err(|e| e.to_string())?;
-    let g = u8::from_str_radix(&s[2..4], 16).map_err(|e| e.to_string())?;
-    let b = u8::from_str_radix(&s[4..6], 16).map_err(|e| e.to_string())?;
+    let invalid = || format!("hex は 16 進数である必要があります (got '{}')", s);
+    let r = u8::from_str_radix(&s[0..2], 16).map_err(|_| invalid())?;
+    let g = u8::from_str_radix(&s[2..4], 16).map_err(|_| invalid())?;
+    let b = u8::from_str_radix(&s[4..6], 16).map_err(|_| invalid())?;
     Ok((r, g, b))
 }
 
