@@ -129,11 +129,7 @@ impl Client {
             .headers(self.auth_headers()?)
             .send()
             .context("HTTP request failed (list_devices)")?;
-        let api: ApiResponse<DeviceList> = resp
-            .error_for_status()
-            .context("HTTP error from list_devices")?
-            .json()
-            .context("failed to decode list_devices JSON")?;
+        let api: ApiResponse<DeviceList> = Self::parse_response(resp, "list_devices")?;
         check_status(&api)?;
         Ok(api.body.context("empty body in list_devices")?.device_list)
     }
@@ -146,11 +142,7 @@ impl Client {
             .headers(self.auth_headers()?)
             .send()
             .context("HTTP request failed (get_status)")?;
-        let api: ApiResponse<BulbStatus> = resp
-            .error_for_status()
-            .context("HTTP error from get_status")?
-            .json()
-            .context("failed to decode get_status JSON")?;
+        let api: ApiResponse<BulbStatus> = Self::parse_response(resp, "get_status")?;
         check_status(&api)?;
         api.body.context("empty body in get_status")
     }
@@ -169,13 +161,22 @@ impl Client {
             .json(&body)
             .send()
             .context("HTTP request failed (send_command)")?;
-        let api: ApiResponse<serde_json::Value> = resp
-            .error_for_status()
-            .context("HTTP error from send_command")?
-            .json()
-            .context("failed to decode send_command JSON")?;
+        let api: ApiResponse<serde_json::Value> = Self::parse_response(resp, "send_command")?;
         check_status(&api)?;
         Ok(())
+    }
+
+    /// レスポンスから `ApiResponse<T>` をパースする。
+    /// HTTP 4xx/5xx でも、body が SwitchBot API の JSON 形式なら message をエラーに含める。
+    fn parse_response<T: serde::de::DeserializeOwned>(
+        resp: reqwest::blocking::Response,
+        op: &str,
+    ) -> Result<ApiResponse<T>> {
+        let status = resp.status();
+        let body_text = resp
+            .text()
+            .with_context(|| format!("failed to read response body ({})", op))?;
+        parse_response_inner::<T>(&body_text, status, op)
     }
 
     pub fn set_color(&self, device_id: &str, r: u8, g: u8, b: u8) -> Result<()> {
@@ -196,6 +197,50 @@ impl Client {
 
     pub fn turn_off(&self, device_id: &str) -> Result<()> {
         self.send_command(device_id, "turnOff", "default")
+    }
+}
+
+/// HTTP レスポンスのテキストと status から `ApiResponse<T>` をパースする pure 関数。
+/// テストで直接呼び出し可能。
+///
+/// - HTTP success かつ JSON パース成功 → Ok
+/// - HTTP error かつ JSON パース成功 → API の message を含むエラー
+/// - HTTP error かつ JSON パース失敗 → raw body の先頭 200 文字を含むエラー
+/// - HTTP success かつ JSON パース失敗 → デコードエラー
+fn parse_response_inner<T: serde::de::DeserializeOwned>(
+    body_text: &str,
+    status: reqwest::StatusCode,
+    op: &str,
+) -> Result<ApiResponse<T>> {
+    match serde_json::from_str::<ApiResponse<T>>(body_text) {
+        Ok(api) => {
+            if !status.is_success() && api.status_code != 100 {
+                return Err(anyhow::anyhow!(
+                    "{} HTTP {}: {} (statusCode={})",
+                    op,
+                    status.as_u16(),
+                    api.message,
+                    api.status_code
+                ));
+            }
+            Ok(api)
+        }
+        Err(_) if !status.is_success() => {
+            let snippet = body_text
+                .lines()
+                .next()
+                .unwrap_or("")
+                .chars()
+                .take(200)
+                .collect::<String>();
+            Err(anyhow::anyhow!(
+                "{} HTTP {}: {}",
+                op,
+                status.as_u16(),
+                snippet
+            ))
+        }
+        Err(e) => Err(anyhow::anyhow!("failed to decode {} JSON: {}", op, e)),
     }
 }
 
@@ -301,5 +346,39 @@ mod tests {
         let err = check_status(&resp).unwrap_err();
         assert!(err.to_string().contains("device offline"));
         assert!(err.to_string().contains("161"));
+    }
+
+    #[test]
+    fn parse_response_inner_includes_api_message_on_http_error() {
+        let body = r#"{"statusCode": 401, "message": "unauthorized", "body": null}"#;
+        let result: Result<ApiResponse<DeviceList>> =
+            parse_response_inner(body, reqwest::StatusCode::UNAUTHORIZED, "list_devices");
+        let err = result.unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("HTTP 401"), "msg={}", msg);
+        assert!(msg.contains("unauthorized"), "msg={}", msg);
+    }
+
+    #[test]
+    fn parse_response_inner_falls_back_to_raw_body_on_non_json_error() {
+        let body = "Internal Server Error";
+        let result: Result<ApiResponse<DeviceList>> = parse_response_inner(
+            body,
+            reqwest::StatusCode::INTERNAL_SERVER_ERROR,
+            "list_devices",
+        );
+        let err = result.unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("HTTP 500"), "msg={}", msg);
+        assert!(msg.contains("Internal Server Error"), "msg={}", msg);
+    }
+
+    #[test]
+    fn parse_response_inner_returns_ok_on_success() {
+        let body = r#"{"statusCode": 100, "message": "success", "body": {"deviceList": []}}"#;
+        let result: Result<ApiResponse<DeviceList>> =
+            parse_response_inner(body, reqwest::StatusCode::OK, "list_devices");
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().status_code, 100);
     }
 }

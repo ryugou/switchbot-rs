@@ -4,7 +4,7 @@ SwitchBot Color Bulb (W1401400) を Stream Deck から操作するための Rust
 
 ## 特徴
 
-- 単一バイナリ (~2-3 MB)。`~/.local/bin/switchbot` に置くだけ
+- 単一バイナリ (~4-5 MB)。`~/.local/bin/switchbot` に置くだけ
 - 認証情報は 1Password 連携 (`op://` 参照) または平文 `.env`
 - bump コマンドで RGB/明るさ/色温度をワンタップずつ加減算
 - macOS 通知でエラー時にユーザーへ即フィードバック

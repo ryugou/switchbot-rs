@@ -90,10 +90,11 @@ pub fn load_devices(path: &Path) -> Result<Option<DefaultDevice>> {
     };
     let parsed: DevicesFile = toml::from_str(&content)
         .with_context(|| format!("failed to parse devices file: {}", path.display()))?;
-    let device = match parsed.default {
+    let mut device = match parsed.default {
         Some(d) => d,
         None => return Ok(None),
     };
+    device.id = device.id.trim().to_string();
     if device.id.is_empty() {
         return Ok(None);
     }
@@ -650,5 +651,23 @@ id = "abc"
 
         let mode = fs::metadata(&path).unwrap().permissions().mode();
         assert_eq!(mode & 0o777, 0o600);
+    }
+
+    #[test]
+    fn load_devices_whitespace_only_id_returns_none() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("devices");
+        fs::write(&path, "[default]\nid = \"   \"\ntype = \"Color Bulb\"\n").unwrap();
+        let result = load_devices(&path).unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn load_devices_id_is_trimmed() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("devices");
+        fs::write(&path, "[default]\nid = \"  abc  \"\n").unwrap();
+        let result = load_devices(&path).unwrap().unwrap();
+        assert_eq!(result.id, "abc");
     }
 }

@@ -16,7 +16,7 @@ SwitchBot Color Bulb (W1401400) を Stream Deck から快適に操作するた�
 
 ```
 switchbot color <hex>             # 例: switchbot color FEDFE1   (RGB モードへ)
-switchbot bright <0-100|max>      # 例: switchbot bright 50, switchbot bright max
+switchbot bright <1-100|max>      # 例: switchbot bright 50, switchbot bright max
 switchbot temp <2700-6500>        # 例: switchbot temp 3000      (温度モードへ)
 switchbot bump <axis>             # 例: switchbot bump R+, switchbot bump temp-
 switchbot on
@@ -231,7 +231,7 @@ ISO 8601 タイムスタンプ (JST) + レベル (`INFO` / `ERROR`) + 1 行メ�
    # SWITCHBOT_SECRET=...
    ```
    stderr: `~/.switchbot/.env を編集してください`
-3. `devices` がなければ「~/.switchbot/devices」セクションのテンプレを書き出して exit 1。stderr: `switchbot list で deviceId を確認できます`
+3. `devices` がなければ「~/.switchbot/devices」セクションのテンプレを書き出すが、`switchbot list` 経路だけは続行可能 (`device = None` で進む)。それ以外のコマンドは「デバイスが未設定です」エラーで exit 1。stderr: `switchbot list で deviceId を確認できます`
 4. `mode` がなくても起動は通る (bump R/G/B/temp 系はエラーになるが、color/temp/bright/on/off/list は問題なく動く)。
 5. `directories::BaseDirs::new()` が `None` を返す環境 (`HOME` 未設定など、macOS では稀) は exit 1。stderr: `ホームディレクトリを特定できません`
 
