@@ -12,6 +12,12 @@ pub fn log_error(log_path: &Path, msg: &str) {
 }
 
 fn write_log(log_path: &Path, level: &str, msg: &str) {
+    // 親ディレクトリ (~/.switchbot/) がまだ存在しない場合に備えて create_dir_all しておく。
+    // 失敗しても OpenOptions 側で再度エラーになるので無視。
+    if let Some(parent) = log_path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+
     let line = format_log_line(chrono::Local::now(), level, msg);
     let _ = OpenOptions::new()
         .append(true)
@@ -115,5 +121,19 @@ mod tests {
             escape_for_applescript("error: \"bad\" input\nusage: ..."),
             r#"error: \"bad\" input usage: ..."#
         );
+    }
+
+    #[test]
+    fn log_creates_parent_directory_if_missing() {
+        let dir = tempdir().unwrap();
+        // 親ディレクトリ (.switchbot) はまだ存在しない
+        let nested = dir.path().join(".switchbot").join("log");
+        assert!(!nested.parent().unwrap().exists());
+
+        log_info(&nested, "test message");
+
+        assert!(nested.exists(), "log file should be created");
+        let content = std::fs::read_to_string(&nested).unwrap();
+        assert!(content.contains("test message"));
     }
 }

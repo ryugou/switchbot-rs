@@ -61,12 +61,19 @@ fn run() -> Result<(), ()> {
     // 4) コマンドを実行。成功時はログ INFO、失敗時はログ ERROR + 通知 + stderr。
     match commands::handle(&cli.command, &ctx) {
         Ok(msg) => {
-            feedback::log_info(&ctx.log_path, &msg);
-            // list は出力を stdout にも流す
+            // list だけは stdout に TOML を流し、log には短いサマリを書く。
+            // (TOML の 1 行目だけ抜かれて識別不能な log エントリになるのを防ぐ)
             if let cli::Command::List = cli.command {
                 use std::io::Write as _;
                 print!("{}", msg);
                 let _ = std::io::stdout().flush();
+                let device_count = msg.matches('[').count();
+                feedback::log_info(
+                    &ctx.log_path,
+                    &format!("list ok ({} device(s))", device_count),
+                );
+            } else {
+                feedback::log_info(&ctx.log_path, &msg);
             }
             Ok(())
         }
