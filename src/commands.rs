@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context as _, Result};
 use toml::value::{Table, Value};
 
 use crate::api::{self, parse_color_str, Client};
@@ -80,52 +80,34 @@ pub fn resolve_mode_for_bump(local: Option<Mode>, status: &api::BulbStatus) -> M
     local.unwrap_or_else(|| infer_mode_from_status(status))
 }
 
-/// `Mode` を公開ラベル ("rgb" / "temp") に変換する。CLI 出力と JSON の両方で使う。
-pub fn mode_to_str(mode: Mode) -> &'static str {
-    match mode {
-        Mode::Rgb => "rgb",
-        Mode::Temp => "temp",
-    }
-}
-
 /// `BulbStatus` を v0.2 設計書通りの JSON 1 行に整形する純粋関数。
 fn format_status_json(status: &api::BulbStatus) -> Result<String> {
-    let power = match status.power {
-        api::Power::On => "on",
-        api::Power::Off => "off",
-    };
-    let mode = mode_to_str(infer_mode_from_status(status));
+    let mode = infer_mode_from_status(status).as_str();
     let value = serde_json::json!({
-        "power": power,
+        "power": status.power,
         "brightness": status.brightness,
         "color": status.color,
         "color_temperature": status.color_temperature,
         "mode": mode,
     });
-    serde_json::to_string(&value)
-        .map_err(|e| anyhow::anyhow!("failed to serialize status JSON: {}", e))
+    serde_json::to_string(&value).context("failed to serialize status JSON")
 }
 
 /// 期待モードと実際モードを照合し、ズレていればエラーを返す。
-pub fn require_mode(actual: Option<Mode>, expected: Mode) -> Result<()> {
-    match actual {
-        None => Err(anyhow!(
-            "モードが未設定です。先に switchbot color <hex> または switchbot temp <K> を実行してください。"
-        )),
-        Some(m) if m == expected => Ok(()),
-        Some(_) => {
-            let bin = env!("CARGO_PKG_NAME");
-            let (current_label, switch_cmd) = match expected {
-                Mode::Rgb => ("温度モード", format!("{bin} color <hex>")),
-                Mode::Temp => ("RGB モード", format!("{bin} temp <K>")),
-            };
-            Err(anyhow!(
-                "現在 {}です。{} を先に実行してください。",
-                current_label,
-                switch_cmd
-            ))
-        }
+pub fn require_mode(actual: Mode, expected: Mode) -> Result<()> {
+    if actual == expected {
+        return Ok(());
     }
+    let bin = env!("CARGO_PKG_NAME");
+    let (current_label, switch_cmd) = match expected {
+        Mode::Rgb => ("温度モード", format!("{bin} color <hex>")),
+        Mode::Temp => ("RGB モード", format!("{bin} temp <K>")),
+    };
+    Err(anyhow!(
+        "現在 {} です。{} を先に実行してください。",
+        current_label,
+        switch_cmd
+    ))
 }
 
 /// device が必要なコマンドで ctx.device が Configured でない場合にエラーを返す。
@@ -235,8 +217,10 @@ fn cmd_status(client: &Client, device: &DefaultDevice) -> Result<String> {
     format_status_json(&status)
 }
 
+/// 現在のモードを取得する。ローカル `~/.switchbot/mode` が存在すれば即座にその値を返し、
+/// なければ API GET status の `colorTemperature` から推測する。ローカル優先により、
+/// 本 CLI で `color`/`temp` を実行した直後は API の伝播ラグの影響を受けない。
 fn cmd_mode(client: &Client, ctx: &Context, device: &DefaultDevice) -> Result<String> {
-    // ローカル mode 優先。なければ API status から infer。
     let mode = match config::read_mode(&ctx.mode_path)? {
         Some(m) => m,
         None => {
@@ -244,14 +228,14 @@ fn cmd_mode(client: &Client, ctx: &Context, device: &DefaultDevice) -> Result<St
             infer_mode_from_status(&status)
         }
     };
-    Ok(mode_to_str(mode).to_string())
+    Ok(mode.as_str().to_string())
 }
 
 fn cmd_sync(client: &Client, ctx: &Context, device: &DefaultDevice) -> Result<String> {
     let status = client.get_status(&device.id)?;
     let mode = infer_mode_from_status(&status);
     config::write_mode(&ctx.mode_path, mode)?;
-    Ok(format!("sync ok ({})", mode_to_str(mode)))
+    Ok(format!("sync ok ({})", mode.as_str()))
 }
 
 fn cmd_bump(
@@ -266,7 +250,7 @@ fn cmd_bump(
     let delta = axis_delta(axis);
     match delta {
         AxisDelta::Red(d) | AxisDelta::Green(d) | AxisDelta::Blue(d) => {
-            require_mode(Some(mode), Mode::Rgb)?;
+            require_mode(mode, Mode::Rgb)?;
             let (r0, g0, b0) = parse_color_str(&status.color)?;
             let (r, g, b) = match delta {
                 AxisDelta::Red(_) => (bump_rgb_channel(r0, d), g0, b0),
@@ -283,7 +267,7 @@ fn cmd_bump(
             Ok(format!("bump {} ok ({})", axis_label(axis), new_value))
         }
         AxisDelta::Temperature(d) => {
-            require_mode(Some(mode), Mode::Temp)?;
+            require_mode(mode, Mode::Temp)?;
             let new_k = bump_temperature(status.color_temperature, d);
             client.set_color_temperature(&device.id, new_k)?;
             Ok(format!("bump {} ok ({}K)", axis_label(axis), new_k))
@@ -437,13 +421,13 @@ mod tests {
 
     #[test]
     fn require_mode_matches() {
-        assert!(require_mode(Some(Mode::Rgb), Mode::Rgb).is_ok());
-        assert!(require_mode(Some(Mode::Temp), Mode::Temp).is_ok());
+        assert!(require_mode(Mode::Rgb, Mode::Rgb).is_ok());
+        assert!(require_mode(Mode::Temp, Mode::Temp).is_ok());
     }
 
     #[test]
     fn require_mode_mismatch_rgb_expected() {
-        let err = require_mode(Some(Mode::Temp), Mode::Rgb).unwrap_err();
+        let err = require_mode(Mode::Temp, Mode::Rgb).unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("温度モード"));
         assert!(msg.contains("switchbot color"));
@@ -451,16 +435,10 @@ mod tests {
 
     #[test]
     fn require_mode_mismatch_temp_expected() {
-        let err = require_mode(Some(Mode::Rgb), Mode::Temp).unwrap_err();
+        let err = require_mode(Mode::Rgb, Mode::Temp).unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("RGB モード"));
         assert!(msg.contains("switchbot temp"));
-    }
-
-    #[test]
-    fn require_mode_none_errors() {
-        let err = require_mode(None, Mode::Rgb).unwrap_err();
-        assert!(err.to_string().contains("モードが未設定"));
     }
 
     #[test]

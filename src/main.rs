@@ -75,15 +75,11 @@ fn run() -> Result<(), ()> {
                     feedback::log_info(&ctx.log_path, "list ok");
                 }
                 cli::Command::Status => {
-                    use std::io::Write as _;
                     println!("{}", msg);
-                    let _ = std::io::stdout().flush();
                     feedback::log_info(&ctx.log_path, "status ok");
                 }
                 cli::Command::Mode => {
-                    use std::io::Write as _;
                     println!("{}", msg);
-                    let _ = std::io::stdout().flush();
                     feedback::log_info(&ctx.log_path, &format!("mode ok ({})", msg));
                 }
                 _ => {
