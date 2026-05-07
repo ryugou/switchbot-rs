@@ -147,7 +147,10 @@ pub fn handle(command: &Command, ctx: &Context) -> Result<String> {
     )?;
     match command {
         Command::List => cmd_list(&client),
-        Command::Mode => Ok(String::new()), // Task 4 で実装
+        Command::Mode => {
+            let device = require_device(ctx)?;
+            cmd_mode(&client, ctx, device)
+        }
         Command::Status => {
             let device = require_device(ctx)?;
             cmd_status(&client, device)
@@ -222,6 +225,18 @@ fn cmd_list(client: &Client) -> Result<String> {
 fn cmd_status(client: &Client, device: &DefaultDevice) -> Result<String> {
     let status = client.get_status(&device.id)?;
     format_status_json(&status)
+}
+
+fn cmd_mode(client: &Client, ctx: &Context, device: &DefaultDevice) -> Result<String> {
+    // ローカル mode 優先。なければ API status から infer。
+    let mode = match config::read_mode(&ctx.mode_path)? {
+        Some(m) => m,
+        None => {
+            let status = client.get_status(&device.id)?;
+            infer_mode_from_status(&status)
+        }
+    };
+    Ok(mode_to_str(mode).to_string())
 }
 
 fn cmd_bump(
