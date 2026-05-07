@@ -108,6 +108,14 @@ pub fn require_color_bulb(device: &DefaultDevice) -> Result<()> {
     ))
 }
 
+/// `require_device` と `require_color_bulb` を組み合わせ、Color Bulb の `&DefaultDevice` を返す。
+/// device-required コマンドの dispatch から重複を排除する。
+fn require_color_bulb_device(ctx: &Context) -> Result<&DefaultDevice> {
+    let device = require_device(ctx)?;
+    require_color_bulb(device)?;
+    Ok(device)
+}
+
 /// 期待モードと実際モードを照合し、ズレていればエラーを返す。
 pub fn require_mode(actual: Mode, expected: Mode) -> Result<()> {
     if actual == expected {
@@ -150,39 +158,39 @@ pub fn handle(command: &Command, ctx: &Context) -> Result<String> {
     match command {
         Command::List => cmd_list(&client),
         Command::Mode => {
-            let device = require_device(ctx)?;
+            let device = require_color_bulb_device(ctx)?;
             cmd_mode(&client, ctx, device)
         }
         Command::Status => {
-            let device = require_device(ctx)?;
+            let device = require_color_bulb_device(ctx)?;
             cmd_status(&client, device)
         }
         Command::Sync => {
-            let device = require_device(ctx)?;
+            let device = require_color_bulb_device(ctx)?;
             cmd_sync(&client, ctx, device)
         }
         Command::Color { rgb: (r, g, b) } => {
-            let device = require_device(ctx)?;
+            let device = require_color_bulb_device(ctx)?;
             cmd_color(&client, ctx, device, *r, *g, *b)
         }
         Command::Bright { value } => {
-            let device = require_device(ctx)?;
+            let device = require_color_bulb_device(ctx)?;
             cmd_bright(&client, device, *value)
         }
         Command::Temp { kelvin } => {
-            let device = require_device(ctx)?;
+            let device = require_color_bulb_device(ctx)?;
             cmd_temp(&client, ctx, device, *kelvin)
         }
         Command::Bump { axis } => {
-            let device = require_device(ctx)?;
+            let device = require_color_bulb_device(ctx)?;
             cmd_bump(&client, ctx, device, *axis)
         }
         Command::On => {
-            let device = require_device(ctx)?;
+            let device = require_color_bulb_device(ctx)?;
             cmd_on(&client, device)
         }
         Command::Off => {
-            let device = require_device(ctx)?;
+            let device = require_color_bulb_device(ctx)?;
             cmd_off(&client, device)
         }
     }
@@ -228,7 +236,6 @@ fn cmd_list(client: &Client) -> Result<String> {
 }
 
 fn cmd_status(client: &Client, device: &DefaultDevice) -> Result<String> {
-    require_color_bulb(device)?;
     let status = client.get_status(&device.id)?;
     format_status_json(&status)
 }
@@ -237,7 +244,6 @@ fn cmd_status(client: &Client, device: &DefaultDevice) -> Result<String> {
 /// なければ API GET status の `colorTemperature` から推測する。ローカル優先により、
 /// 本 CLI で `color`/`temp` を実行した直後は API の伝播ラグの影響を受けない。
 fn cmd_mode(client: &Client, ctx: &Context, device: &DefaultDevice) -> Result<String> {
-    require_color_bulb(device)?;
     let mode = match config::read_mode(&ctx.mode_path)? {
         Some(m) => m,
         None => {
@@ -249,7 +255,6 @@ fn cmd_mode(client: &Client, ctx: &Context, device: &DefaultDevice) -> Result<St
 }
 
 fn cmd_sync(client: &Client, ctx: &Context, device: &DefaultDevice) -> Result<String> {
-    require_color_bulb(device)?;
     let status = client.get_status(&device.id)?;
     let mode = infer_mode_from_status(&status);
     config::write_mode(&ctx.mode_path, mode)?;
@@ -262,7 +267,6 @@ fn cmd_bump(
     device: &DefaultDevice,
     axis: BumpAxis,
 ) -> Result<String> {
-    require_color_bulb(device)?;
     let local_mode = config::read_mode(&ctx.mode_path)?;
     let status = client.get_status(&device.id)?;
     let mode = resolve_mode_for_bump(local_mode, &status);

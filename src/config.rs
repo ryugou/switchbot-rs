@@ -44,7 +44,7 @@ pub enum Mode {
 
 impl Mode {
     /// Mode の公開ラベル ("rgb" / "temp")。CLI 出力・JSON・モードファイル全てで使う。
-    pub fn as_str(self) -> &'static str {
+    pub fn as_str(&self) -> &'static str {
         match self {
             Mode::Rgb => "rgb",
             Mode::Temp => "temp",
