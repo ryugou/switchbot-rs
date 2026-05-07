@@ -75,6 +75,32 @@ pub fn infer_mode_from_status(status: &api::BulbStatus) -> Mode {
     }
 }
 
+/// `Mode` を公開ラベル ("rgb" / "temp") に変換する。CLI 出力と JSON の両方で使う。
+pub fn mode_to_str(mode: Mode) -> &'static str {
+    match mode {
+        Mode::Rgb => "rgb",
+        Mode::Temp => "temp",
+    }
+}
+
+/// `BulbStatus` を v0.2 設計書通りの JSON 1 行に整形する純粋関数。
+fn format_status_json(status: &api::BulbStatus) -> Result<String> {
+    let power = match status.power {
+        api::Power::On => "on",
+        api::Power::Off => "off",
+    };
+    let mode = mode_to_str(infer_mode_from_status(status));
+    let value = serde_json::json!({
+        "power": power,
+        "brightness": status.brightness,
+        "color": status.color,
+        "color_temperature": status.color_temperature,
+        "mode": mode,
+    });
+    serde_json::to_string(&value)
+        .map_err(|e| anyhow::anyhow!("failed to serialize status JSON: {}", e))
+}
+
 /// 期待モードと実際モードを照合し、ズレていればエラーを返す。
 pub fn require_mode(actual: Option<Mode>, expected: Mode) -> Result<()> {
     match actual {
@@ -121,9 +147,12 @@ pub fn handle(command: &Command, ctx: &Context) -> Result<String> {
     )?;
     match command {
         Command::List => cmd_list(&client),
-        Command::Mode => Ok(String::new()),   // Task 4 で実装
-        Command::Status => Ok(String::new()), // Task 3 で実装
-        Command::Sync => Ok(String::new()),   // Task 5 で実装
+        Command::Mode => Ok(String::new()), // Task 4 で実装
+        Command::Status => {
+            let device = require_device(ctx)?;
+            cmd_status(&client, device)
+        }
+        Command::Sync => Ok(String::new()), // Task 5 で実装
         Command::Color { rgb: (r, g, b) } => {
             let device = require_device(ctx)?;
             cmd_color(&client, ctx, device, *r, *g, *b)
@@ -188,6 +217,11 @@ fn cmd_off(client: &Client, device: &DefaultDevice) -> Result<String> {
 fn cmd_list(client: &Client) -> Result<String> {
     let devices = client.list_devices()?;
     Ok(format_devices_toml(&devices))
+}
+
+fn cmd_status(client: &Client, device: &DefaultDevice) -> Result<String> {
+    let status = client.get_status(&device.id)?;
+    format_status_json(&status)
 }
 
 fn cmd_bump(
@@ -552,5 +586,36 @@ mod tests {
     fn infer_mode_zero_color_with_temp_is_temp() {
         let s = make_status("0:0:0", 4500);
         assert_eq!(infer_mode_from_status(&s), Mode::Temp);
+    }
+
+    #[test]
+    fn format_status_json_rgb_mode() {
+        let s = make_status("255:128:0", 0);
+        let out = format_status_json(&s).unwrap();
+        // フィールド順序は実装に依存しないので含有チェックのみ
+        assert!(out.contains("\"power\":\"on\""));
+        assert!(out.contains("\"brightness\":50"));
+        assert!(out.contains("\"color\":\"255:128:0\""));
+        assert!(out.contains("\"color_temperature\":0"));
+        assert!(out.contains("\"mode\":\"rgb\""));
+    }
+
+    #[test]
+    fn format_status_json_temp_mode() {
+        let s = make_status("0:0:0", 3000);
+        let out = format_status_json(&s).unwrap();
+        assert!(out.contains("\"color_temperature\":3000"));
+        assert!(out.contains("\"mode\":\"temp\""));
+    }
+
+    #[test]
+    fn format_status_json_is_single_line() {
+        let s = make_status("255:0:0", 0);
+        let out = format_status_json(&s).unwrap();
+        assert!(
+            !out.contains('\n'),
+            "JSON should be single line, got: {}",
+            out
+        );
     }
 }
