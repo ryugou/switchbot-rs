@@ -155,7 +155,10 @@ pub fn handle(command: &Command, ctx: &Context) -> Result<String> {
             let device = require_device(ctx)?;
             cmd_status(&client, device)
         }
-        Command::Sync => Ok(String::new()), // Task 5 で実装
+        Command::Sync => {
+            let device = require_device(ctx)?;
+            cmd_sync(&client, ctx, device)
+        }
         Command::Color { rgb: (r, g, b) } => {
             let device = require_device(ctx)?;
             cmd_color(&client, ctx, device, *r, *g, *b)
@@ -237,6 +240,13 @@ fn cmd_mode(client: &Client, ctx: &Context, device: &DefaultDevice) -> Result<St
         }
     };
     Ok(mode_to_str(mode).to_string())
+}
+
+fn cmd_sync(client: &Client, ctx: &Context, device: &DefaultDevice) -> Result<String> {
+    let status = client.get_status(&device.id)?;
+    let mode = infer_mode_from_status(&status);
+    config::write_mode(&ctx.mode_path, mode)?;
+    Ok(format!("sync ok ({})", mode_to_str(mode)))
 }
 
 fn cmd_bump(
