@@ -75,6 +75,11 @@ pub fn infer_mode_from_status(status: &api::BulbStatus) -> Mode {
     }
 }
 
+/// `bump` 系で使うモードを決定する。ローカル mode 優先、無ければ status から infer。
+pub fn resolve_mode_for_bump(local: Option<Mode>, status: &api::BulbStatus) -> Mode {
+    local.unwrap_or_else(|| infer_mode_from_status(status))
+}
+
 /// `Mode` を公開ラベル ("rgb" / "temp") に変換する。CLI 出力と JSON の両方で使う。
 pub fn mode_to_str(mode: Mode) -> &'static str {
     match mode {
@@ -255,12 +260,13 @@ fn cmd_bump(
     device: &DefaultDevice,
     axis: BumpAxis,
 ) -> Result<String> {
-    let mode = config::read_mode(&ctx.mode_path)?;
+    let local_mode = config::read_mode(&ctx.mode_path)?;
+    let status = client.get_status(&device.id)?;
+    let mode = resolve_mode_for_bump(local_mode, &status);
     let delta = axis_delta(axis);
     match delta {
         AxisDelta::Red(d) | AxisDelta::Green(d) | AxisDelta::Blue(d) => {
-            require_mode(mode, Mode::Rgb)?;
-            let status = client.get_status(&device.id)?;
+            require_mode(Some(mode), Mode::Rgb)?;
             let (r0, g0, b0) = parse_color_str(&status.color)?;
             let (r, g, b) = match delta {
                 AxisDelta::Red(_) => (bump_rgb_channel(r0, d), g0, b0),
@@ -272,14 +278,12 @@ fn cmd_bump(
             Ok(format!("bump {} ok ({}:{}:{})", axis_label(axis), r, g, b))
         }
         AxisDelta::Brightness(d) => {
-            let status = client.get_status(&device.id)?;
             let new_value = bump_brightness(status.brightness, d);
             client.set_brightness(&device.id, new_value)?;
             Ok(format!("bump {} ok ({})", axis_label(axis), new_value))
         }
         AxisDelta::Temperature(d) => {
-            require_mode(mode, Mode::Temp)?;
-            let status = client.get_status(&device.id)?;
+            require_mode(Some(mode), Mode::Temp)?;
             let new_k = bump_temperature(status.color_temperature, d);
             client.set_color_temperature(&device.id, new_k)?;
             Ok(format!("bump {} ok ({}K)", axis_label(axis), new_k))
@@ -593,6 +597,25 @@ mod tests {
             "colorTemperature": color_temperature,
         });
         serde_json::from_value(json).unwrap()
+    }
+
+    #[test]
+    fn resolve_mode_uses_local_when_present() {
+        let s = make_status("255:0:0", 3000);
+        // ローカルが Rgb なら、status の colorTemperature が 3000 でもローカル優先
+        assert_eq!(resolve_mode_for_bump(Some(Mode::Rgb), &s), Mode::Rgb);
+    }
+
+    #[test]
+    fn resolve_mode_falls_back_to_status_when_local_absent_rgb() {
+        let s = make_status("255:0:0", 0);
+        assert_eq!(resolve_mode_for_bump(None, &s), Mode::Rgb);
+    }
+
+    #[test]
+    fn resolve_mode_falls_back_to_status_when_local_absent_temp() {
+        let s = make_status("0:0:0", 4000);
+        assert_eq!(resolve_mode_for_bump(None, &s), Mode::Temp);
     }
 
     #[test]
