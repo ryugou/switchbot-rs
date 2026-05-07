@@ -64,6 +64,17 @@ pub enum AxisDelta {
     Temperature(i32),
 }
 
+/// API status の `colorTemperature` フィールドからモードを推測する。
+/// SwitchBot Color Bulb は温度モード時に `color` を "0:0:0" に、
+/// RGB モード時に `colorTemperature` を 0 にゼロクリアする (実機検証 2026-05-07)。
+pub fn infer_mode_from_status(status: &api::BulbStatus) -> Mode {
+    if status.color_temperature == 0 {
+        Mode::Rgb
+    } else {
+        Mode::Temp
+    }
+}
+
 /// 期待モードと実際モードを照合し、ズレていればエラーを返す。
 pub fn require_mode(actual: Option<Mode>, expected: Mode) -> Result<()> {
     match actual {
@@ -506,5 +517,37 @@ mod tests {
         }
         let key = unique_key("base", &mut seen);
         assert_eq!(key, "base-1001");
+    }
+
+    // --- infer_mode_from_status テスト ---
+
+    use crate::api::BulbStatus;
+
+    fn make_status(color: &str, color_temperature: u32) -> BulbStatus {
+        let json = serde_json::json!({
+            "power": "on",
+            "brightness": 50,
+            "color": color,
+            "colorTemperature": color_temperature,
+        });
+        serde_json::from_value(json).unwrap()
+    }
+
+    #[test]
+    fn infer_mode_zero_temperature_is_rgb() {
+        let s = make_status("255:128:0", 0);
+        assert_eq!(infer_mode_from_status(&s), Mode::Rgb);
+    }
+
+    #[test]
+    fn infer_mode_positive_temperature_is_temp() {
+        let s = make_status("0:0:0", 3000);
+        assert_eq!(infer_mode_from_status(&s), Mode::Temp);
+    }
+
+    #[test]
+    fn infer_mode_zero_color_with_temp_is_temp() {
+        let s = make_status("0:0:0", 4500);
+        assert_eq!(infer_mode_from_status(&s), Mode::Temp);
     }
 }
