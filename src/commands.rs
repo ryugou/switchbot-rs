@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context as _, Result};
 use toml::value::{Table, Value};
 
 use crate::api::{self, parse_color_str, Client};
@@ -64,26 +64,73 @@ pub enum AxisDelta {
     Temperature(i32),
 }
 
-/// 期待モードと実際モードを照合し、ズレていればエラーを返す。
-pub fn require_mode(actual: Option<Mode>, expected: Mode) -> Result<()> {
-    match actual {
-        None => Err(anyhow!(
-            "モードが未設定です。先に switchbot color <hex> または switchbot temp <K> を実行してください。"
-        )),
-        Some(m) if m == expected => Ok(()),
-        Some(_) => {
-            let bin = env!("CARGO_PKG_NAME");
-            let (current_label, switch_cmd) = match expected {
-                Mode::Rgb => ("温度モード", format!("{bin} color <hex>")),
-                Mode::Temp => ("RGB モード", format!("{bin} temp <K>")),
-            };
-            Err(anyhow!(
-                "現在 {}です。{} を先に実行してください。",
-                current_label,
-                switch_cmd
-            ))
-        }
+/// API status の `colorTemperature` フィールドからモードを推測する。
+/// SwitchBot Color Bulb は温度モード時に `color` を "0:0:0" に、
+/// RGB モード時に `colorTemperature` を 0 にゼロクリアする (実機検証 2026-05-07)。
+pub fn infer_mode_from_status(status: &api::BulbStatus) -> Mode {
+    if status.color_temperature == 0 {
+        Mode::Rgb
+    } else {
+        Mode::Temp
     }
+}
+
+/// `bump` 系で使うモードを決定する。ローカル mode 優先、無ければ status から infer。
+pub fn resolve_mode_for_bump(local: Option<Mode>, status: &api::BulbStatus) -> Mode {
+    local.unwrap_or_else(|| infer_mode_from_status(status))
+}
+
+/// `BulbStatus` を v0.2 設計書通りの JSON 1 行に整形する純粋関数。
+fn format_status_json(status: &api::BulbStatus) -> Result<String> {
+    let mode = infer_mode_from_status(status).as_str();
+    let value = serde_json::json!({
+        "power": status.power,
+        "brightness": status.brightness,
+        "color": status.color,
+        "color_temperature": status.color_temperature,
+        "mode": mode,
+    });
+    serde_json::to_string(&value).context("failed to serialize status JSON")
+}
+
+/// `device` が Color Bulb であることを保証する。それ以外のデバイス種別なら
+/// 下流の API decode 失敗でなく分かりやすいエラーで弾く。
+/// `~/.switchbot/devices` の `[default].type` が `"Color Bulb"` でなければエラー。
+pub fn require_color_bulb(device: &DefaultDevice) -> Result<()> {
+    if device.r#type == "Color Bulb" {
+        return Ok(());
+    }
+    Err(anyhow!(
+        "デバイス種別が Color Bulb ではありません (現在: '{}')。\
+本 CLI は Color Bulb のみ対応しています。\
+`switchbot list > ~/.switchbot/devices` で取得した正しいデバイスを `[default]` にしてください。",
+        device.r#type
+    ))
+}
+
+/// `require_device` と `require_color_bulb` を組み合わせ、Color Bulb の `&DefaultDevice` を返す。
+/// device-required コマンドの dispatch から重複を排除する。
+fn require_color_bulb_device(ctx: &Context) -> Result<&DefaultDevice> {
+    let device = require_device(ctx)?;
+    require_color_bulb(device)?;
+    Ok(device)
+}
+
+/// 期待モードと実際モードを照合し、ズレていればエラーを返す。
+pub fn require_mode(actual: Mode, expected: Mode) -> Result<()> {
+    if actual == expected {
+        return Ok(());
+    }
+    let bin = env!("CARGO_PKG_NAME");
+    let (current_label, switch_cmd) = match expected {
+        Mode::Rgb => ("温度モード", format!("{bin} color <hex>")),
+        Mode::Temp => ("RGB モード", format!("{bin} temp <K>")),
+    };
+    Err(anyhow!(
+        "現在 {}です。{} を先に実行してください。",
+        current_label,
+        switch_cmd
+    ))
 }
 
 /// device が必要なコマンドで ctx.device が Configured でない場合にエラーを返す。
@@ -92,12 +139,12 @@ fn require_device(ctx: &Context) -> Result<&DefaultDevice> {
         DeviceState::Configured(d) => Ok(d),
         DeviceState::Unconfigured => Err(anyhow!(
             "デバイスが未設定です。`switchbot list > ~/.switchbot/devices` を実行し、\
-             使うデバイスのセクション名を [default] にしてください \
-             (デバイスが 1 台のみなら自動で [default] になります)。"
+使うデバイスのセクション名を [default] にしてください \
+(デバイスが 1 台のみなら自動で [default] になります)。"
         )),
         DeviceState::Malformed(msg) => Err(anyhow!(
             "~/.switchbot/devices の解析に失敗しました: {}\n\
-             `switchbot list > ~/.switchbot/devices` で再生成できます。",
+`switchbot list > ~/.switchbot/devices` で再生成できます。",
             msg
         )),
     }
@@ -110,28 +157,37 @@ pub fn handle(command: &Command, ctx: &Context) -> Result<String> {
     )?;
     match command {
         Command::List => cmd_list(&client),
+        Command::Mode => cmd_mode(&client, ctx),
+        Command::Status => {
+            let device = require_color_bulb_device(ctx)?;
+            cmd_status(&client, device)
+        }
+        Command::Sync => {
+            let device = require_color_bulb_device(ctx)?;
+            cmd_sync(&client, ctx, device)
+        }
         Command::Color { rgb: (r, g, b) } => {
-            let device = require_device(ctx)?;
+            let device = require_color_bulb_device(ctx)?;
             cmd_color(&client, ctx, device, *r, *g, *b)
         }
         Command::Bright { value } => {
-            let device = require_device(ctx)?;
+            let device = require_color_bulb_device(ctx)?;
             cmd_bright(&client, device, *value)
         }
         Command::Temp { kelvin } => {
-            let device = require_device(ctx)?;
+            let device = require_color_bulb_device(ctx)?;
             cmd_temp(&client, ctx, device, *kelvin)
         }
         Command::Bump { axis } => {
-            let device = require_device(ctx)?;
+            let device = require_color_bulb_device(ctx)?;
             cmd_bump(&client, ctx, device, *axis)
         }
         Command::On => {
-            let device = require_device(ctx)?;
+            let device = require_color_bulb_device(ctx)?;
             cmd_on(&client, device)
         }
         Command::Off => {
-            let device = require_device(ctx)?;
+            let device = require_color_bulb_device(ctx)?;
             cmd_off(&client, device)
         }
     }
@@ -176,18 +232,46 @@ fn cmd_list(client: &Client) -> Result<String> {
     Ok(format_devices_toml(&devices))
 }
 
+fn cmd_status(client: &Client, device: &DefaultDevice) -> Result<String> {
+    let status = client.get_status(&device.id)?;
+    format_status_json(&status)
+}
+
+/// 現在のモードを取得する。ローカル `~/.switchbot/mode` が存在すれば即座にその値を返し、
+/// なければ API GET status の `colorTemperature` から推測する。ローカル優先により、
+/// 本 CLI で `color`/`temp` を実行した直後は API の伝播ラグの影響を受けない。
+/// ローカル mode が存在する場合は `~/.switchbot/devices` を参照しないため、
+/// devices 未設定でも動作する。
+fn cmd_mode(client: &Client, ctx: &Context) -> Result<String> {
+    if let Some(mode) = config::read_mode(&ctx.mode_path)? {
+        return Ok(mode.as_str().to_string());
+    }
+    // フォールバック: API status から infer。devices と Color Bulb が必要。
+    let device = require_color_bulb_device(ctx)?;
+    let status = client.get_status(&device.id)?;
+    Ok(infer_mode_from_status(&status).as_str().to_string())
+}
+
+fn cmd_sync(client: &Client, ctx: &Context, device: &DefaultDevice) -> Result<String> {
+    let status = client.get_status(&device.id)?;
+    let mode = infer_mode_from_status(&status);
+    config::write_mode(&ctx.mode_path, mode)?;
+    Ok(format!("sync ok ({})", mode.as_str()))
+}
+
 fn cmd_bump(
     client: &Client,
     ctx: &Context,
     device: &DefaultDevice,
     axis: BumpAxis,
 ) -> Result<String> {
-    let mode = config::read_mode(&ctx.mode_path)?;
+    let local_mode = config::read_mode(&ctx.mode_path)?;
+    let status = client.get_status(&device.id)?;
+    let mode = resolve_mode_for_bump(local_mode, &status);
     let delta = axis_delta(axis);
     match delta {
         AxisDelta::Red(d) | AxisDelta::Green(d) | AxisDelta::Blue(d) => {
             require_mode(mode, Mode::Rgb)?;
-            let status = client.get_status(&device.id)?;
             let (r0, g0, b0) = parse_color_str(&status.color)?;
             let (r, g, b) = match delta {
                 AxisDelta::Red(_) => (bump_rgb_channel(r0, d), g0, b0),
@@ -199,14 +283,12 @@ fn cmd_bump(
             Ok(format!("bump {} ok ({}:{}:{})", axis_label(axis), r, g, b))
         }
         AxisDelta::Brightness(d) => {
-            let status = client.get_status(&device.id)?;
             let new_value = bump_brightness(status.brightness, d);
             client.set_brightness(&device.id, new_value)?;
             Ok(format!("bump {} ok ({})", axis_label(axis), new_value))
         }
         AxisDelta::Temperature(d) => {
             require_mode(mode, Mode::Temp)?;
-            let status = client.get_status(&device.id)?;
             let new_k = bump_temperature(status.color_temperature, d);
             client.set_color_temperature(&device.id, new_k)?;
             Ok(format!("bump {} ok ({}K)", axis_label(axis), new_k))
@@ -360,13 +442,13 @@ mod tests {
 
     #[test]
     fn require_mode_matches() {
-        assert!(require_mode(Some(Mode::Rgb), Mode::Rgb).is_ok());
-        assert!(require_mode(Some(Mode::Temp), Mode::Temp).is_ok());
+        assert!(require_mode(Mode::Rgb, Mode::Rgb).is_ok());
+        assert!(require_mode(Mode::Temp, Mode::Temp).is_ok());
     }
 
     #[test]
     fn require_mode_mismatch_rgb_expected() {
-        let err = require_mode(Some(Mode::Temp), Mode::Rgb).unwrap_err();
+        let err = require_mode(Mode::Temp, Mode::Rgb).unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("温度モード"));
         assert!(msg.contains("switchbot color"));
@@ -374,16 +456,10 @@ mod tests {
 
     #[test]
     fn require_mode_mismatch_temp_expected() {
-        let err = require_mode(Some(Mode::Rgb), Mode::Temp).unwrap_err();
+        let err = require_mode(Mode::Rgb, Mode::Temp).unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("RGB モード"));
         assert!(msg.contains("switchbot temp"));
-    }
-
-    #[test]
-    fn require_mode_none_errors() {
-        let err = require_mode(None, Mode::Rgb).unwrap_err();
-        assert!(err.to_string().contains("モードが未設定"));
     }
 
     #[test]
@@ -506,5 +582,122 @@ mod tests {
         }
         let key = unique_key("base", &mut seen);
         assert_eq!(key, "base-1001");
+    }
+
+    // --- infer_mode_from_status テスト ---
+
+    // --- require_color_bulb テスト ---
+
+    #[test]
+    fn require_color_bulb_accepts_color_bulb() {
+        let device = DefaultDevice {
+            id: "01-x".to_string(),
+            r#type: "Color Bulb".to_string(),
+            name: "test".to_string(),
+        };
+        assert!(require_color_bulb(&device).is_ok());
+    }
+
+    #[test]
+    fn require_color_bulb_rejects_other_types() {
+        let device = DefaultDevice {
+            id: "02-y".to_string(),
+            r#type: "Plug Mini".to_string(),
+            name: "test".to_string(),
+        };
+        let err = require_color_bulb(&device).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("Color Bulb ではありません"));
+        assert!(msg.contains("Plug Mini"));
+    }
+
+    #[test]
+    fn require_color_bulb_rejects_empty_type() {
+        let device = DefaultDevice {
+            id: "03-z".to_string(),
+            r#type: "".to_string(),
+            name: "test".to_string(),
+        };
+        assert!(require_color_bulb(&device).is_err());
+    }
+
+    use crate::api::BulbStatus;
+
+    fn make_status(color: &str, color_temperature: u32) -> BulbStatus {
+        let json = serde_json::json!({
+            "power": "on",
+            "brightness": 50,
+            "color": color,
+            "colorTemperature": color_temperature,
+        });
+        serde_json::from_value(json).unwrap()
+    }
+
+    #[test]
+    fn resolve_mode_uses_local_when_present() {
+        let s = make_status("255:0:0", 3000);
+        // ローカルが Rgb なら、status の colorTemperature が 3000 でもローカル優先
+        assert_eq!(resolve_mode_for_bump(Some(Mode::Rgb), &s), Mode::Rgb);
+    }
+
+    #[test]
+    fn resolve_mode_falls_back_to_status_when_local_absent_rgb() {
+        let s = make_status("255:0:0", 0);
+        assert_eq!(resolve_mode_for_bump(None, &s), Mode::Rgb);
+    }
+
+    #[test]
+    fn resolve_mode_falls_back_to_status_when_local_absent_temp() {
+        let s = make_status("0:0:0", 4000);
+        assert_eq!(resolve_mode_for_bump(None, &s), Mode::Temp);
+    }
+
+    #[test]
+    fn infer_mode_zero_temperature_is_rgb() {
+        let s = make_status("255:128:0", 0);
+        assert_eq!(infer_mode_from_status(&s), Mode::Rgb);
+    }
+
+    #[test]
+    fn infer_mode_positive_temperature_is_temp() {
+        let s = make_status("0:0:0", 3000);
+        assert_eq!(infer_mode_from_status(&s), Mode::Temp);
+    }
+
+    #[test]
+    fn infer_mode_zero_color_with_temp_is_temp() {
+        let s = make_status("0:0:0", 4500);
+        assert_eq!(infer_mode_from_status(&s), Mode::Temp);
+    }
+
+    #[test]
+    fn format_status_json_rgb_mode() {
+        let s = make_status("255:128:0", 0);
+        let out = format_status_json(&s).unwrap();
+        // フィールド順序は実装に依存しないので含有チェックのみ
+        assert!(out.contains("\"power\":\"on\""));
+        assert!(out.contains("\"brightness\":50"));
+        assert!(out.contains("\"color\":\"255:128:0\""));
+        assert!(out.contains("\"color_temperature\":0"));
+        assert!(out.contains("\"mode\":\"rgb\""));
+    }
+
+    #[test]
+    fn format_status_json_temp_mode() {
+        let s = make_status("0:0:0", 3000);
+        let out = format_status_json(&s).unwrap();
+        assert!(out.contains("\"color_temperature\":3000"));
+        assert!(out.contains("\"mode\":\"temp\""));
+    }
+
+    #[test]
+    fn format_status_json_is_single_line() {
+        let s = make_status("255:0:0", 0);
+        let out = format_status_json(&s).unwrap();
+        assert!(
+            !out.contains('\n'),
+            "JSON should be single line, got: {}",
+            out
+        );
     }
 }

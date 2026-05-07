@@ -42,6 +42,16 @@ pub enum Mode {
     Temp,
 }
 
+impl Mode {
+    /// Mode の公開ラベル ("rgb" / "temp")。CLI 出力・JSON・モードファイル全てで使う。
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Mode::Rgb => "rgb",
+            Mode::Temp => "temp",
+        }
+    }
+}
+
 #[derive(Deserialize)]
 struct ModeFile {
     mode: String,
@@ -71,11 +81,7 @@ pub fn read_mode(path: &Path) -> Result<Option<Mode>> {
 /// モードファイルを atomic write で書き出す。親ディレクトリが存在する前提。
 /// 同時実行時の tmp 衝突を避けるため NamedTempFile を使い、persist で rename する。
 pub fn write_mode(path: &Path, mode: Mode) -> Result<()> {
-    let m = match mode {
-        Mode::Rgb => "rgb",
-        Mode::Temp => "temp",
-    };
-    let content = format!("mode = \"{}\"\n", m);
+    let content = format!("mode = \"{}\"\n", mode.as_str());
 
     let parent = path
         .parent()

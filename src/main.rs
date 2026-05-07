@@ -67,15 +67,24 @@ fn run() -> Result<(), ()> {
     // 4) コマンドを実行。成功時はログ INFO、失敗時はログ ERROR + 通知 + stderr。
     match commands::handle(&cli.command, &ctx) {
         Ok(msg) => {
-            // list だけは stdout に TOML を流し、log には短いサマリを書く。
-            // (TOML の 1 行目だけ抜かれて識別不能な log エントリになるのを防ぐ)
-            if let cli::Command::List = cli.command {
-                use std::io::Write as _;
-                print!("{}", msg);
-                let _ = std::io::stdout().flush();
-                feedback::log_info(&ctx.log_path, "list ok");
-            } else {
-                feedback::log_info(&ctx.log_path, &msg);
+            match cli.command {
+                cli::Command::List => {
+                    use std::io::Write as _;
+                    print!("{}", msg);
+                    let _ = std::io::stdout().flush();
+                    feedback::log_info(&ctx.log_path, "list ok");
+                }
+                cli::Command::Status => {
+                    println!("{}", msg);
+                    feedback::log_info(&ctx.log_path, "status ok");
+                }
+                cli::Command::Mode => {
+                    println!("{}", msg);
+                    feedback::log_info(&ctx.log_path, &format!("mode ok ({})", msg));
+                }
+                _ => {
+                    feedback::log_info(&ctx.log_path, &msg);
+                }
             }
             Ok(())
         }

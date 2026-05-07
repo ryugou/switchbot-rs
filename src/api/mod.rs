@@ -2,7 +2,7 @@ mod signing;
 
 use anyhow::{Context, Result};
 use reqwest::header::{HeaderMap, HeaderValue, CONTENT_TYPE};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
 const BASE_URL: &str = "https://api.switch-bot.com";
@@ -31,7 +31,7 @@ pub struct Device {
     pub kind: String,
 }
 
-#[derive(Deserialize, Debug, PartialEq, Eq, Clone, Copy)]
+#[derive(Deserialize, Serialize, Debug, PartialEq, Eq, Clone, Copy)]
 #[serde(rename_all = "lowercase")]
 pub enum Power {
     On,
