@@ -93,6 +93,21 @@ fn format_status_json(status: &api::BulbStatus) -> Result<String> {
     serde_json::to_string(&value).context("failed to serialize status JSON")
 }
 
+/// `device` が Color Bulb であることを保証する。それ以外のデバイス種別なら
+/// 下流の API decode 失敗でなく分かりやすいエラーで弾く。
+/// `~/.switchbot/devices` の `[default].type` が `"Color Bulb"` でなければエラー。
+pub fn require_color_bulb(device: &DefaultDevice) -> Result<()> {
+    if device.r#type == "Color Bulb" {
+        return Ok(());
+    }
+    Err(anyhow!(
+        "デバイス種別が Color Bulb ではありません (現在: '{}')。\
+         本 CLI は Color Bulb のみ対応しています。\
+         `switchbot list > ~/.switchbot/devices` で取得した正しいデバイスを `[default]` にしてください。",
+        device.r#type
+    ))
+}
+
 /// 期待モードと実際モードを照合し、ズレていればエラーを返す。
 pub fn require_mode(actual: Mode, expected: Mode) -> Result<()> {
     if actual == expected {
@@ -213,6 +228,7 @@ fn cmd_list(client: &Client) -> Result<String> {
 }
 
 fn cmd_status(client: &Client, device: &DefaultDevice) -> Result<String> {
+    require_color_bulb(device)?;
     let status = client.get_status(&device.id)?;
     format_status_json(&status)
 }
@@ -221,6 +237,7 @@ fn cmd_status(client: &Client, device: &DefaultDevice) -> Result<String> {
 /// なければ API GET status の `colorTemperature` から推測する。ローカル優先により、
 /// 本 CLI で `color`/`temp` を実行した直後は API の伝播ラグの影響を受けない。
 fn cmd_mode(client: &Client, ctx: &Context, device: &DefaultDevice) -> Result<String> {
+    require_color_bulb(device)?;
     let mode = match config::read_mode(&ctx.mode_path)? {
         Some(m) => m,
         None => {
@@ -232,6 +249,7 @@ fn cmd_mode(client: &Client, ctx: &Context, device: &DefaultDevice) -> Result<St
 }
 
 fn cmd_sync(client: &Client, ctx: &Context, device: &DefaultDevice) -> Result<String> {
+    require_color_bulb(device)?;
     let status = client.get_status(&device.id)?;
     let mode = infer_mode_from_status(&status);
     config::write_mode(&ctx.mode_path, mode)?;
@@ -244,6 +262,7 @@ fn cmd_bump(
     device: &DefaultDevice,
     axis: BumpAxis,
 ) -> Result<String> {
+    require_color_bulb(device)?;
     let local_mode = config::read_mode(&ctx.mode_path)?;
     let status = client.get_status(&device.id)?;
     let mode = resolve_mode_for_bump(local_mode, &status);
@@ -564,6 +583,41 @@ mod tests {
     }
 
     // --- infer_mode_from_status テスト ---
+
+    // --- require_color_bulb テスト ---
+
+    #[test]
+    fn require_color_bulb_accepts_color_bulb() {
+        let device = DefaultDevice {
+            id: "01-x".to_string(),
+            r#type: "Color Bulb".to_string(),
+            name: "test".to_string(),
+        };
+        assert!(require_color_bulb(&device).is_ok());
+    }
+
+    #[test]
+    fn require_color_bulb_rejects_other_types() {
+        let device = DefaultDevice {
+            id: "02-y".to_string(),
+            r#type: "Plug Mini".to_string(),
+            name: "test".to_string(),
+        };
+        let err = require_color_bulb(&device).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("Color Bulb ではありません"));
+        assert!(msg.contains("Plug Mini"));
+    }
+
+    #[test]
+    fn require_color_bulb_rejects_empty_type() {
+        let device = DefaultDevice {
+            id: "03-z".to_string(),
+            r#type: "".to_string(),
+            name: "test".to_string(),
+        };
+        assert!(require_color_bulb(&device).is_err());
+    }
 
     use crate::api::BulbStatus;
 

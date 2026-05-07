@@ -74,7 +74,11 @@ switchbot sync                   # API 状態をローカル mode に反映
 
 ## モード drift について
 
-別アプリ・別端末で電球のモードを変えると、本 CLI の `~/.switchbot/mode` は古い値のまま残ります。`bump R/G/B/temp±` がモード不一致エラーで弾かれたら、`switchbot color <hex>` または `switchbot temp <K>` を一度実行して再同期してください。
+別アプリ・別端末で電球のモードを変えると、本 CLI の `~/.switchbot/mode` は古い値のまま残ります。
+
+v0.2 以降は `bump R/G/B/temp±` が API status から自動でモードを推測するため、ローカル mode のずれが直接エラーになることはほとんどなくなりました。明示的にローカル mode を再同期したい場合は `switchbot sync` を実行してください (状態は変えず、API 状態に合わせて `~/.switchbot/mode` を上書きします)。
+
+ローカル mode を含めて電球の状態自体を切り替えたい場合は、従来通り `switchbot color <hex>` または `switchbot temp <K>` を実行してください。
 
 ## ログ
 
