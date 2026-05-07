@@ -121,6 +121,9 @@ pub fn handle(command: &Command, ctx: &Context) -> Result<String> {
     )?;
     match command {
         Command::List => cmd_list(&client),
+        Command::Mode => Ok(String::new()),   // Task 4 で実装
+        Command::Status => Ok(String::new()), // Task 3 で実装
+        Command::Sync => Ok(String::new()),   // Task 5 で実装
         Command::Color { rgb: (r, g, b) } => {
             let device = require_device(ctx)?;
             cmd_color(&client, ctx, device, *r, *g, *b)

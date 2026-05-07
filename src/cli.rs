@@ -27,6 +27,9 @@ pub enum Command {
     On,
     Off,
     List,
+    Mode,
+    Status,
+    Sync,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
@@ -206,6 +209,24 @@ mod tests {
         assert!(matches!(parse(&["on"]).unwrap().command, Command::On));
         assert!(matches!(parse(&["off"]).unwrap().command, Command::Off));
         assert!(matches!(parse(&["list"]).unwrap().command, Command::List));
+    }
+
+    #[test]
+    fn parse_mode_subcommand() {
+        let cli = parse(&["mode"]).unwrap();
+        assert!(matches!(cli.command, Command::Mode));
+    }
+
+    #[test]
+    fn parse_status_subcommand() {
+        let cli = parse(&["status"]).unwrap();
+        assert!(matches!(cli.command, Command::Status));
+    }
+
+    #[test]
+    fn parse_sync_subcommand() {
+        let cli = parse(&["sync"]).unwrap();
+        assert!(matches!(cli.command, Command::Sync));
     }
 
     #[test]
