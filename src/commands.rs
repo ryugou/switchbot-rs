@@ -157,10 +157,7 @@ pub fn handle(command: &Command, ctx: &Context) -> Result<String> {
     )?;
     match command {
         Command::List => cmd_list(&client),
-        Command::Mode => {
-            let device = require_color_bulb_device(ctx)?;
-            cmd_mode(&client, ctx, device)
-        }
+        Command::Mode => cmd_mode(&client, ctx),
         Command::Status => {
             let device = require_color_bulb_device(ctx)?;
             cmd_status(&client, device)
@@ -243,15 +240,16 @@ fn cmd_status(client: &Client, device: &DefaultDevice) -> Result<String> {
 /// 現在のモードを取得する。ローカル `~/.switchbot/mode` が存在すれば即座にその値を返し、
 /// なければ API GET status の `colorTemperature` から推測する。ローカル優先により、
 /// 本 CLI で `color`/`temp` を実行した直後は API の伝播ラグの影響を受けない。
-fn cmd_mode(client: &Client, ctx: &Context, device: &DefaultDevice) -> Result<String> {
-    let mode = match config::read_mode(&ctx.mode_path)? {
-        Some(m) => m,
-        None => {
-            let status = client.get_status(&device.id)?;
-            infer_mode_from_status(&status)
-        }
-    };
-    Ok(mode.as_str().to_string())
+/// ローカル mode が存在する場合は `~/.switchbot/devices` を参照しないため、
+/// devices 未設定でも動作する。
+fn cmd_mode(client: &Client, ctx: &Context) -> Result<String> {
+    if let Some(mode) = config::read_mode(&ctx.mode_path)? {
+        return Ok(mode.as_str().to_string());
+    }
+    // フォールバック: API status から infer。devices と Color Bulb が必要。
+    let device = require_color_bulb_device(ctx)?;
+    let status = client.get_status(&device.id)?;
+    Ok(infer_mode_from_status(&status).as_str().to_string())
 }
 
 fn cmd_sync(client: &Client, ctx: &Context, device: &DefaultDevice) -> Result<String> {

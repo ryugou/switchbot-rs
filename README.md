@@ -60,7 +60,7 @@ switchbot sync                   # API 状態をローカル mode に反映
 
 `mode` は現在のモードを 1 行で返す:
 - ローカル mode ファイル (`~/.switchbot/mode`) があればその値
-- 無ければ API `GET /devices/{id}/status` を呼んで `colorTemperature == 0` を判定基準に推測
+- 無ければ API `GET /v1.1/devices/{id}/status` を呼んで `colorTemperature == 0` を判定基準に推測
 
 `status` は電球の現状を JSON で返す (jq 等でパース可能):
 
