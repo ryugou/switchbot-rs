@@ -46,12 +46,31 @@ switchbot bump <axis>            # 例: switchbot bump R+
 switchbot on
 switchbot off
 switchbot list
+switchbot mode                   # 現在のモードを 1 行で出力 (rgb / temp)
+switchbot status                 # 電球の現状を JSON で出力
+switchbot sync                   # API 状態をローカル mode に反映
 ```
 
 `bump` の axes:
 - RGB: `R+`, `R-`, `G+`, `G-`, `B+`, `B-` (RGB モード時のみ。±16)
 - 明るさ: `bright+`, `bright-` (両モード可。±10)
 - 色温度: `temp+`, `temp-` (温度モード時のみ。±100K)
+
+### `mode` / `status` / `sync`
+
+`mode` は現在のモードを 1 行で返す:
+- ローカル mode ファイル (`~/.switchbot/mode`) があればその値
+- 無ければ API `GET /devices/{id}/status` を呼んで `colorTemperature == 0` を判定基準に推測
+
+`status` は電球の現状を JSON で返す (jq 等でパース可能):
+
+```json
+{"power":"on","brightness":50,"color":"255:0:0","color_temperature":0,"mode":"rgb"}
+```
+
+`sync` は API 状態に合わせてローカル `~/.switchbot/mode` を上書きする。別端末や公式アプリでモードを変更した後の再同期に使う。
+
+なお v0.2 から `bump R/G/B/temp±` は **ローカル mode が無くても動く** (API status の `colorTemperature` から自動推測)。
 
 ## モード drift について
 
@@ -94,6 +113,11 @@ cargo build --release    # リリースビルド
 - [ ] `switchbot off` → 消灯
 - [ ] `switchbot on` → 点灯
 - [ ] `~/.switchbot/log` に各操作の INFO/ERROR が 1 行ずつ記録されている
+- [ ] `switchbot mode` で `rgb` または `temp` が出力される (ローカル mode 有り)
+- [ ] `~/.switchbot/mode` を削除 → `switchbot mode` で API ヒューリスティクスから推測される値が出力される
+- [ ] `switchbot status` で JSON が出力される (`jq` でパース可能)
+- [ ] 公式アプリで電球のモードを変える → `switchbot sync` → `cat ~/.switchbot/mode` で値が更新されている
+- [ ] `~/.switchbot/mode` を削除 → `switchbot bump R+` (RGB 状態時) が「モード未設定」エラーで弾かれず動作する
 
 ## 仕様書
 
