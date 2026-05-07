@@ -102,8 +102,8 @@ pub fn require_color_bulb(device: &DefaultDevice) -> Result<()> {
     }
     Err(anyhow!(
         "デバイス種別が Color Bulb ではありません (現在: '{}')。\
-         本 CLI は Color Bulb のみ対応しています。\
-         `switchbot list > ~/.switchbot/devices` で取得した正しいデバイスを `[default]` にしてください。",
+本 CLI は Color Bulb のみ対応しています。\
+`switchbot list > ~/.switchbot/devices` で取得した正しいデバイスを `[default]` にしてください。",
         device.r#type
     ))
 }
@@ -127,7 +127,7 @@ pub fn require_mode(actual: Mode, expected: Mode) -> Result<()> {
         Mode::Temp => ("RGB モード", format!("{bin} temp <K>")),
     };
     Err(anyhow!(
-        "現在 {} です。{} を先に実行してください。",
+        "現在 {}です。{} を先に実行してください。",
         current_label,
         switch_cmd
     ))
@@ -139,12 +139,12 @@ fn require_device(ctx: &Context) -> Result<&DefaultDevice> {
         DeviceState::Configured(d) => Ok(d),
         DeviceState::Unconfigured => Err(anyhow!(
             "デバイスが未設定です。`switchbot list > ~/.switchbot/devices` を実行し、\
-             使うデバイスのセクション名を [default] にしてください \
-             (デバイスが 1 台のみなら自動で [default] になります)。"
+使うデバイスのセクション名を [default] にしてください \
+(デバイスが 1 台のみなら自動で [default] になります)。"
         )),
         DeviceState::Malformed(msg) => Err(anyhow!(
             "~/.switchbot/devices の解析に失敗しました: {}\n\
-             `switchbot list > ~/.switchbot/devices` で再生成できます。",
+`switchbot list > ~/.switchbot/devices` で再生成できます。",
             msg
         )),
     }
